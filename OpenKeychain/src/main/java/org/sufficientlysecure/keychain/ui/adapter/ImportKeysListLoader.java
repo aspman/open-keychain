@@ -17,70 +17,76 @@
 
 package org.sufficientlysecure.keychain.ui.adapter;
 
+
+import java.io.BufferedInputStream;
+import java.io.ByteArrayInputStream;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+
 import android.content.Context;
+import android.support.annotation.NonNull;
 import android.support.v4.content.AsyncTaskLoader;
 import android.support.v4.util.LongSparseArray;
 
 import org.sufficientlysecure.keychain.Constants;
 import org.sufficientlysecure.keychain.keyimport.ImportKeysListEntry;
 import org.sufficientlysecure.keychain.keyimport.ParcelableKeyRing;
+import org.sufficientlysecure.keychain.operations.results.GetKeyResult;
+import org.sufficientlysecure.keychain.operations.results.OperationResult;
+import org.sufficientlysecure.keychain.operations.results.OperationResult.LogType;
+import org.sufficientlysecure.keychain.operations.results.OperationResult.OperationLog;
 import org.sufficientlysecure.keychain.pgp.UncachedKeyRing;
+import org.sufficientlysecure.keychain.pgp.UncachedKeyRing.IteratorWithIOThrow;
+import org.sufficientlysecure.keychain.ui.ImportKeysListFragment.BytesLoaderState;
+import org.sufficientlysecure.keychain.util.FileHelper;
 import org.sufficientlysecure.keychain.util.InputData;
 import org.sufficientlysecure.keychain.util.Log;
 import org.sufficientlysecure.keychain.util.PositionAwareInputStream;
 
-import java.io.BufferedInputStream;
-import java.util.ArrayList;
-import java.util.List;
-
 public class ImportKeysListLoader
         extends AsyncTaskLoader<AsyncTaskResultWrapper<ArrayList<ImportKeysListEntry>>> {
 
-    public static class FileHasNoContent extends Exception {
-
-    }
-
-    public static class NonPgpPart extends Exception {
-        private int mCount;
-
-        public NonPgpPart(int count) {
-            this.mCount = count;
-        }
-
-        public int getCount() {
-            return mCount;
-        }
-    }
-
     final Context mContext;
-    final InputData mInputData;
+    final BytesLoaderState mLoaderState;
 
-    ArrayList<ImportKeysListEntry> mData = new ArrayList<ImportKeysListEntry>();
-    LongSparseArray<ParcelableKeyRing> mParcelableRings = new LongSparseArray<ParcelableKeyRing>();
+    ArrayList<ImportKeysListEntry> mData = new ArrayList<>();
+    LongSparseArray<ParcelableKeyRing> mParcelableRings = new LongSparseArray<>();
     AsyncTaskResultWrapper<ArrayList<ImportKeysListEntry>> mEntryListWrapper;
 
-    public ImportKeysListLoader(Context context, InputData inputData) {
+    public ImportKeysListLoader(Context context, BytesLoaderState inputData) {
         super(context);
         this.mContext = context;
-        this.mInputData = inputData;
+        this.mLoaderState = inputData;
     }
 
     @Override
     public AsyncTaskResultWrapper<ArrayList<ImportKeysListEntry>> loadInBackground() {
-
         // This has already been loaded! nvm any further, just return
         if (mEntryListWrapper != null) {
             return mEntryListWrapper;
         }
 
-        mEntryListWrapper = new AsyncTaskResultWrapper<ArrayList<ImportKeysListEntry>>(mData, null);
+        {
+            GetKeyResult getKeyResult = new GetKeyResult(GetKeyResult.RESULT_OK, null);
+            mEntryListWrapper = new AsyncTaskResultWrapper<>(mData, getKeyResult);
+        }
 
-        if (mInputData == null) {
+        if (mLoaderState == null) {
             Log.e(Constants.TAG, "Input data is null!");
             return mEntryListWrapper;
         }
 
-        generateListOfKeyrings(mInputData);
+        try {
+            InputData inputData = getInputData(getContext(), mLoaderState);
+            generateListOfKeyrings(inputData);
+        } catch (FileNotFoundException e) {
+            OperationLog log = new OperationLog();
+            log.add(LogType.MSG_GET_FILE_NOT_FOUND, 0);
+            GetKeyResult getKeyResult = new GetKeyResult(GetKeyResult.RESULT_ERROR_FILE_NOT_FOUND, log);
+            mEntryListWrapper = new AsyncTaskResultWrapper<>(mData, getKeyResult);
+        }
 
         return mEntryListWrapper;
     }
@@ -95,12 +101,12 @@ public class ImportKeysListLoader
 
     @Override
     protected void onStartLoading() {
-        forceLoad();
+        super.forceLoad();
     }
 
     @Override
     protected void onStopLoading() {
-        cancelLoad();
+        super.cancelLoad();
     }
 
     @Override
@@ -112,16 +118,8 @@ public class ImportKeysListLoader
         return mParcelableRings;
     }
 
-    /**
-     * Reads all PGPKeyRing objects from input
-     *
-     * @param inputData
-     * @return
-     */
+    /** Reads all PGPKeyRing objects from the bytes of an InputData object. */
     private void generateListOfKeyrings(InputData inputData) {
-
-        boolean isEmpty = true;
-
         PositionAwareInputStream progressIn = new PositionAwareInputStream(
                 inputData.getInputStream());
 
@@ -130,28 +128,38 @@ public class ImportKeysListLoader
         // armor blocks
         BufferedInputStream bufferedInput = new BufferedInputStream(progressIn);
         try {
-
-            // read all available blocks... (asc files can contain many blocks with BEGIN END)
-            while (bufferedInput.available() > 0) {
-                // todo deal with non-keyring objects?
-                List<UncachedKeyRing> rings = UncachedKeyRing.fromStream(bufferedInput);
-                for(UncachedKeyRing key : rings) {
-                    ImportKeysListEntry item = new ImportKeysListEntry(getContext(), key);
-                    mData.add(item);
-                    mParcelableRings.put(key.getMasterKeyId(), new ParcelableKeyRing(key.getEncoded()));
-                    isEmpty = false;
-                }
+            // parse all keyrings
+            IteratorWithIOThrow<UncachedKeyRing> it = UncachedKeyRing.fromStream(bufferedInput);
+            while (it.hasNext()) {
+                UncachedKeyRing ring = it.next();
+                ImportKeysListEntry item = new ImportKeysListEntry(getContext(), ring);
+                mData.add(item);
+                mParcelableRings.put(item.hashCode(), new ParcelableKeyRing(ring.getEncoded()));
             }
-        } catch (Exception e) {
-            Log.e(Constants.TAG, "Exception on parsing key file!", e);
-            mEntryListWrapper = new AsyncTaskResultWrapper<ArrayList<ImportKeysListEntry>>(mData, e);
+        } catch (IOException e) {
+            Log.e(Constants.TAG, "IOException on parsing key file! Return NoValidKeysException!", e);
+            OperationResult.OperationLog log = new OperationResult.OperationLog();
+            log.add(OperationResult.LogType.MSG_GET_NO_VALID_KEYS, 0);
+            GetKeyResult getKeyResult = new GetKeyResult(GetKeyResult.RESULT_ERROR_NO_VALID_KEYS, log);
+            mEntryListWrapper = new AsyncTaskResultWrapper<>(mData, getKeyResult);
+        }
+    }
+
+    @NonNull
+    private static InputData getInputData(Context context, BytesLoaderState loaderState) throws FileNotFoundException {
+        InputData inputData;
+        if (loaderState.mKeyBytes != null) {
+            inputData = new InputData(new ByteArrayInputStream(loaderState.mKeyBytes), loaderState.mKeyBytes.length);
+        } else if (loaderState.mDataUri != null) {
+            InputStream inputStream = context.getContentResolver().openInputStream(loaderState.mDataUri);
+            long length = FileHelper.getFileSize(context, loaderState.mDataUri, -1);
+
+            inputData = new InputData(inputStream, length);
+        } else {
+            throw new AssertionError("Loader state must contain bytes or a data URI. This is a bug!");
         }
 
-        if (isEmpty) {
-            Log.e(Constants.TAG, "File has no content!", new FileHasNoContent());
-            mEntryListWrapper = new AsyncTaskResultWrapper<ArrayList<ImportKeysListEntry>>
-                    (mData, new FileHasNoContent());
-        }
+        return inputData;
     }
 
 }

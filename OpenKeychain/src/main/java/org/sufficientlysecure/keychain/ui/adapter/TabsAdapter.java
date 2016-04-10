@@ -24,7 +24,7 @@ import android.support.v4.app.FragmentStatePagerAdapter;
 import android.support.v4.app.FragmentTransaction;
 import android.support.v4.view.ViewPager;
 import android.support.v7.app.ActionBar;
-import android.support.v7.app.ActionBarActivity;
+import android.support.v7.app.AppCompatActivity;
 
 import java.util.ArrayList;
 
@@ -33,7 +33,7 @@ public class TabsAdapter extends FragmentStatePagerAdapter implements ActionBar.
     private final Context mContext;
     private final ActionBar mActionBar;
     private final ViewPager mViewPager;
-    private final ArrayList<TabInfo> mTabs = new ArrayList<TabInfo>();
+    private final ArrayList<TabInfo> mTabs = new ArrayList<>();
 
     static final class TabInfo {
         public final Class<?> clss;
@@ -45,7 +45,7 @@ public class TabsAdapter extends FragmentStatePagerAdapter implements ActionBar.
         }
     }
 
-    public TabsAdapter(ActionBarActivity activity, ViewPager pager) {
+    public TabsAdapter(AppCompatActivity activity, ViewPager pager) {
         super(activity.getSupportFragmentManager());
         mContext = activity;
         mActionBar = activity.getSupportActionBar();

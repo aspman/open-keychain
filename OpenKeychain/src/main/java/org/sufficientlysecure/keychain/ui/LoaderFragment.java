@@ -1,3 +1,21 @@
+/*
+ * Copyright (C) 2014 Dominik Schürmann <dominik@dominikschuermann.de>
+ * Copyright (C) 2014 Vincent Breitmoser <v.breitmoser@mugenguild.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package org.sufficientlysecure.keychain.ui;
 
 import android.os.Bundle;
@@ -9,16 +27,16 @@ import android.view.animation.AnimationUtils;
 
 import org.sufficientlysecure.keychain.R;
 
-/** This is a fragment helper class, which implements a generic
+/**
+ * This is a fragment helper class, which implements a generic
  * progressbar/container view.
- *
+ * <p/>
  * To use it in a fragment, simply subclass, use onCreateView to create the
  * layout's root view, and ues getContainer() as root view of your subclass.
  * The layout shows a progress bar by default, and can be switched to the
  * actual contents by calling setContentShown().
- * 
  */
-public class LoaderFragment extends Fragment {
+public abstract class LoaderFragment extends Fragment {
     private boolean mContentShown;
     private View mProgressContainer;
     private ViewGroup mContainer;
@@ -35,7 +53,6 @@ public class LoaderFragment extends Fragment {
         mContentShown = false;
 
         return root;
-
     }
 
     protected ViewGroup getContainer() {

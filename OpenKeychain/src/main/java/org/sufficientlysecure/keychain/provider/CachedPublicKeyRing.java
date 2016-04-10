@@ -1,10 +1,33 @@
+/*
+ * Copyright (C) 2014 Dominik Schürmann <dominik@dominikschuermann.de>
+ * Copyright (C) 2014 Vincent Breitmoser <v.breitmoser@mugenguild.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package org.sufficientlysecure.keychain.provider;
 
+import android.database.Cursor;
 import android.net.Uri;
 
 import org.sufficientlysecure.keychain.Constants;
+import org.sufficientlysecure.keychain.pgp.CanonicalizedSecretKey.SecretKeyType;
 import org.sufficientlysecure.keychain.pgp.KeyRing;
-import org.sufficientlysecure.keychain.pgp.exception.PgpGeneralException;
+import org.sufficientlysecure.keychain.pgp.exception.PgpKeyNotFoundException;
+import org.sufficientlysecure.keychain.provider.KeychainContract.KeyRings;
+import org.sufficientlysecure.keychain.provider.KeychainContract.Keys;
+import org.sufficientlysecure.keychain.provider.ProviderHelper.NotFoundException;
 import org.sufficientlysecure.keychain.util.Log;
 
 /** This implementation of KeyRing provides a cached view of PublicKeyRing
@@ -33,13 +56,14 @@ public class CachedPublicKeyRing extends KeyRing {
         mUri = uri;
     }
 
-    public long getMasterKeyId() throws PgpGeneralException {
+    @Override
+    public long getMasterKeyId() throws PgpKeyNotFoundException {
         try {
             Object data = mProviderHelper.getGenericData(mUri,
                     KeychainContract.KeyRings.MASTER_KEY_ID, ProviderHelper.FIELD_TYPE_INTEGER);
             return (Long) data;
         } catch (ProviderHelper.NotFoundException e) {
-            throw new PgpGeneralException(e);
+            throw new PgpKeyNotFoundException(e);
         }
     }
 
@@ -47,10 +71,10 @@ public class CachedPublicKeyRing extends KeyRing {
      * Find the master key id related to a given query. The id will either be extracted from the
      * query, which should work for all specific /key_rings/ queries, or will be queried if it can't.
      */
-    public long extractOrGetMasterKeyId() throws PgpGeneralException {
+    public long extractOrGetMasterKeyId() throws PgpKeyNotFoundException {
         // try extracting from the uri first
         String firstSegment = mUri.getPathSegments().get(1);
-        if (!firstSegment.equals("find")) try {
+        if (!"find".equals(firstSegment)) try {
             return Long.parseLong(firstSegment);
         } catch (NumberFormatException e) {
             // didn't work? oh well.
@@ -59,103 +83,124 @@ public class CachedPublicKeyRing extends KeyRing {
         return getMasterKeyId();
     }
 
-    public String getPrimaryUserId() throws PgpGeneralException {
+    public byte[] getFingerprint() throws PgpKeyNotFoundException {
         try {
             Object data = mProviderHelper.getGenericData(mUri,
-                    KeychainContract.KeyRings.MASTER_KEY_ID,
+                    KeychainContract.KeyRings.FINGERPRINT, ProviderHelper.FIELD_TYPE_BLOB);
+            return (byte[]) data;
+        } catch (ProviderHelper.NotFoundException e) {
+            throw new PgpKeyNotFoundException(e);
+        }
+    }
+
+    @Override
+    public String getPrimaryUserId() throws PgpKeyNotFoundException {
+        try {
+            Object data = mProviderHelper.getGenericData(mUri,
+                    KeychainContract.KeyRings.USER_ID,
                     ProviderHelper.FIELD_TYPE_STRING);
             return (String) data;
         } catch(ProviderHelper.NotFoundException e) {
-            throw new PgpGeneralException(e);
+            throw new PgpKeyNotFoundException(e);
         }
     }
 
-    public boolean isRevoked() throws PgpGeneralException {
+    public String getPrimaryUserIdWithFallback() throws PgpKeyNotFoundException {
+        return getPrimaryUserId();
+    }
+
+    @Override
+    public boolean isRevoked() throws PgpKeyNotFoundException {
         try {
             Object data = mProviderHelper.getGenericData(mUri,
-                    KeychainContract.KeyRings.MASTER_KEY_ID,
+                    KeychainContract.KeyRings.IS_REVOKED,
                     ProviderHelper.FIELD_TYPE_INTEGER);
             return (Long) data > 0;
         } catch(ProviderHelper.NotFoundException e) {
-            throw new PgpGeneralException(e);
+            throw new PgpKeyNotFoundException(e);
         }
     }
 
-    public boolean canCertify() throws PgpGeneralException {
+    @Override
+    public boolean canCertify() throws PgpKeyNotFoundException {
         try {
             Object data = mProviderHelper.getGenericData(mUri,
-                    KeychainContract.KeyRings.MASTER_KEY_ID,
-                    ProviderHelper.FIELD_TYPE_INTEGER);
-            return (Long) data > 0;
+                    KeychainContract.KeyRings.HAS_CERTIFY,
+                    ProviderHelper.FIELD_TYPE_NULL);
+            return !((Boolean) data);
         } catch(ProviderHelper.NotFoundException e) {
-            throw new PgpGeneralException(e);
+            throw new PgpKeyNotFoundException(e);
         }
     }
 
-    public long getEncryptId() throws PgpGeneralException {
+    @Override
+    public long getEncryptId() throws PgpKeyNotFoundException {
         try {
             Object data = mProviderHelper.getGenericData(mUri,
-                    KeychainContract.KeyRings.MASTER_KEY_ID,
+                    KeyRings.HAS_ENCRYPT,
                     ProviderHelper.FIELD_TYPE_INTEGER);
             return (Long) data;
         } catch(ProviderHelper.NotFoundException e) {
-            throw new PgpGeneralException(e);
+            throw new PgpKeyNotFoundException(e);
         }
     }
 
-    public boolean hasEncrypt() throws PgpGeneralException {
-        try {
-            Object data = mProviderHelper.getGenericData(mUri,
-                    KeychainContract.KeyRings.MASTER_KEY_ID,
-                    ProviderHelper.FIELD_TYPE_INTEGER);
-            return (Long) data > 0;
-        } catch(ProviderHelper.NotFoundException e) {
-            throw new PgpGeneralException(e);
-        }
+    @Override
+    public boolean hasEncrypt() throws PgpKeyNotFoundException {
+        return getEncryptId() != 0;
     }
 
-    public long getSignId() throws PgpGeneralException {
+    /** Returns the key id which should be used for signing.
+     *
+     * This method returns keys which are actually available (ie. secret available, and not stripped,
+     * revoked, or expired), hence only works on keyrings where a secret key is available!
+     *
+     */
+    public long getSecretSignId() throws PgpKeyNotFoundException {
         try {
             Object data = mProviderHelper.getGenericData(mUri,
-                    KeychainContract.KeyRings.MASTER_KEY_ID,
+                    KeyRings.HAS_SIGN,
                     ProviderHelper.FIELD_TYPE_INTEGER);
             return (Long) data;
         } catch(ProviderHelper.NotFoundException e) {
-            throw new PgpGeneralException(e);
+            throw new PgpKeyNotFoundException(e);
         }
     }
 
-    public boolean hasSign() throws PgpGeneralException {
+    @Override
+    public int getVerified() throws PgpKeyNotFoundException {
         try {
             Object data = mProviderHelper.getGenericData(mUri,
-                    KeychainContract.KeyRings.MASTER_KEY_ID,
-                    ProviderHelper.FIELD_TYPE_INTEGER);
-            return (Long) data > 0;
-        } catch(ProviderHelper.NotFoundException e) {
-            throw new PgpGeneralException(e);
-        }
-    }
-
-    public int getVerified() throws PgpGeneralException {
-        try {
-            Object data = mProviderHelper.getGenericData(mUri,
-                    KeychainContract.KeyRings.MASTER_KEY_ID,
+                    KeychainContract.KeyRings.VERIFIED,
                     ProviderHelper.FIELD_TYPE_INTEGER);
             return (Integer) data;
         } catch(ProviderHelper.NotFoundException e) {
-            throw new PgpGeneralException(e);
+            throw new PgpKeyNotFoundException(e);
         }
     }
 
-    public boolean hasAnySecret() throws PgpGeneralException {
+    public boolean hasAnySecret() throws PgpKeyNotFoundException {
         try {
             Object data = mProviderHelper.getGenericData(mUri,
-                    KeychainContract.KeyRings.MASTER_KEY_ID,
+                    KeychainContract.KeyRings.HAS_ANY_SECRET,
                     ProviderHelper.FIELD_TYPE_INTEGER);
             return (Long) data > 0;
         } catch(ProviderHelper.NotFoundException e) {
-            throw new PgpGeneralException(e);
+            throw new PgpKeyNotFoundException(e);
         }
-
     }
+
+    private Cursor getSubkeys() throws PgpKeyNotFoundException {
+        Uri keysUri = KeychainContract.Keys.buildKeysUri(extractOrGetMasterKeyId());
+        return mProviderHelper.getContentResolver().query(keysUri, null, null, null, null);
+    }
+
+    public SecretKeyType getSecretKeyType(long keyId) throws NotFoundException {
+        Object data = mProviderHelper.getGenericData(Keys.buildKeysUri(mUri),
+                KeyRings.HAS_SECRET,
+                ProviderHelper.FIELD_TYPE_INTEGER,
+                KeyRings.KEY_ID + " = " + Long.toString(keyId));
+        return SecretKeyType.fromNum(((Long) data).intValue());
+    }
+
 }

@@ -24,26 +24,20 @@ import android.support.v4.app.Fragment;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.AdapterView;
-import android.widget.AdapterView.OnItemSelectedListener;
-import android.widget.Spinner;
 import android.widget.TextView;
-
-import com.beardedhen.androidbootstrap.BootstrapButton;
 
 import org.sufficientlysecure.keychain.Constants;
 import org.sufficientlysecure.keychain.R;
-import org.sufficientlysecure.keychain.pgp.exception.PgpGeneralException;
-import org.sufficientlysecure.keychain.provider.ProviderHelper;
+import org.sufficientlysecure.keychain.operations.results.EditKeyResult;
+import org.sufficientlysecure.keychain.operations.results.OperationResult;
+import org.sufficientlysecure.keychain.pgp.KeyRing;
 import org.sufficientlysecure.keychain.remote.AccountSettings;
-import org.sufficientlysecure.keychain.ui.EditKeyActivity;
-import org.sufficientlysecure.keychain.ui.SelectSecretKeyLayoutFragment;
-import org.sufficientlysecure.keychain.ui.adapter.KeyValueSpinnerAdapter;
-import org.sufficientlysecure.keychain.util.AlgorithmNames;
+import org.sufficientlysecure.keychain.ui.CreateKeyActivity;
+import org.sufficientlysecure.keychain.ui.widget.KeySpinner;
+import org.sufficientlysecure.keychain.ui.widget.SignKeySpinner;
 import org.sufficientlysecure.keychain.util.Log;
 
-public class AccountSettingsFragment extends Fragment implements
-        SelectSecretKeyLayoutFragment.SelectSecretKeyCallback {
+public class AccountSettingsFragment extends Fragment {
 
     private static final int REQUEST_CODE_CREATE_KEY = 0x00008884;
 
@@ -52,16 +46,9 @@ public class AccountSettingsFragment extends Fragment implements
 
     // view
     private TextView mAccNameView;
-    private Spinner mEncryptionAlgorithm;
-    private Spinner mHashAlgorithm;
-    private Spinner mCompression;
 
-    private SelectSecretKeyLayoutFragment mSelectKeyFragment;
-    private BootstrapButton mCreateKeyButton;
-
-    KeyValueSpinnerAdapter mEncryptionAdapter;
-    KeyValueSpinnerAdapter mHashAdapter;
-    KeyValueSpinnerAdapter mCompressionAdapter;
+    private SignKeySpinner mSelectKeySpinner;
+    private View mCreateKeyButton;
 
     public AccountSettings getAccSettings() {
         return mAccSettings;
@@ -71,11 +58,7 @@ public class AccountSettingsFragment extends Fragment implements
         this.mAccSettings = accountSettings;
 
         mAccNameView.setText(accountSettings.getAccountName());
-        mSelectKeyFragment.selectKey(accountSettings.getKeyId());
-        mEncryptionAlgorithm.setSelection(mEncryptionAdapter.getPosition(accountSettings
-                .getEncryptionAlgorithm()));
-        mHashAlgorithm.setSelection(mHashAdapter.getPosition(accountSettings.getHashAlgorithm()));
-        mCompression.setSelection(mCompressionAdapter.getPosition(accountSettings.getCompression()));
+        mSelectKeySpinner.setPreSelectedKeyId(accountSettings.getKeyId());
     }
 
     /**
@@ -88,26 +71,17 @@ public class AccountSettingsFragment extends Fragment implements
         return view;
     }
 
-    /**
-     * Set error String on key selection
-     *
-     * @param error
-     */
-    public void setErrorOnSelectKeyFragment(String error) {
-        mSelectKeyFragment.setError(error);
-    }
-
     private void initView(View view) {
-        mSelectKeyFragment = (SelectSecretKeyLayoutFragment) getFragmentManager().findFragmentById(
-                R.id.api_account_settings_select_key_fragment);
-        mSelectKeyFragment.setCallback(this);
-
+        mSelectKeySpinner = (SignKeySpinner) view.findViewById(R.id.api_account_settings_key_spinner);
         mAccNameView = (TextView) view.findViewById(R.id.api_account_settings_acc_name);
-        mEncryptionAlgorithm = (Spinner) view
-                .findViewById(R.id.api_account_settings_encryption_algorithm);
-        mHashAlgorithm = (Spinner) view.findViewById(R.id.api_account_settings_hash_algorithm);
-        mCompression = (Spinner) view.findViewById(R.id.api_account_settings_compression);
-        mCreateKeyButton = (BootstrapButton) view.findViewById(R.id.api_account_settings_create_key);
+        mCreateKeyButton = view.findViewById(R.id.api_account_settings_create_key);
+
+        mSelectKeySpinner.setOnKeyChangedListener(new KeySpinner.OnKeyChangedListener() {
+            @Override
+            public void onKeyChanged(long masterKeyId) {
+                mAccSettings.setKeyId(masterKeyId);
+            }
+        });
 
         mCreateKeyButton.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -115,60 +89,14 @@ public class AccountSettingsFragment extends Fragment implements
                 createKey();
             }
         });
-
-        AlgorithmNames algorithmNames = new AlgorithmNames(getActivity());
-
-        mEncryptionAdapter = new KeyValueSpinnerAdapter(getActivity(),
-                algorithmNames.getEncryptionNames());
-        mEncryptionAlgorithm.setAdapter(mEncryptionAdapter);
-        mEncryptionAlgorithm.setOnItemSelectedListener(new OnItemSelectedListener() {
-
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                mAccSettings.setEncryptionAlgorithm((int) id);
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-            }
-        });
-
-        mHashAdapter = new KeyValueSpinnerAdapter(getActivity(), algorithmNames.getHashNames());
-        mHashAlgorithm.setAdapter(mHashAdapter);
-        mHashAlgorithm.setOnItemSelectedListener(new OnItemSelectedListener() {
-
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                mAccSettings.setHashAlgorithm((int) id);
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-            }
-        });
-
-        mCompressionAdapter = new KeyValueSpinnerAdapter(getActivity(),
-                algorithmNames.getCompressionNames());
-        mCompression.setAdapter(mCompressionAdapter);
-        mCompression.setOnItemSelectedListener(new OnItemSelectedListener() {
-
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                mAccSettings.setCompression((int) id);
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-            }
-        });
     }
 
     private void createKey() {
-        Intent intent = new Intent(getActivity(), EditKeyActivity.class);
-        intent.setAction(EditKeyActivity.ACTION_CREATE_KEY);
-        intent.putExtra(EditKeyActivity.EXTRA_GENERATE_DEFAULT_KEYS, true);
-        // set default user id to account name
-        intent.putExtra(EditKeyActivity.EXTRA_USER_IDS, mAccSettings.getAccountName());
+        KeyRing.UserId userId = KeyRing.splitUserId(mAccSettings.getAccountName());
+
+        Intent intent = new Intent(getActivity(), CreateKeyActivity.class);
+        intent.putExtra(CreateKeyActivity.EXTRA_NAME, userId.name);
+        intent.putExtra(CreateKeyActivity.EXTRA_EMAIL, userId.email);
         startActivityForResult(intent, REQUEST_CODE_CREATE_KEY);
     }
 
@@ -177,32 +105,18 @@ public class AccountSettingsFragment extends Fragment implements
         switch (requestCode) {
             case REQUEST_CODE_CREATE_KEY: {
                 if (resultCode == Activity.RESULT_OK) {
-                    // select newly created key
-                    try {
-                        long masterKeyId = new ProviderHelper(getActivity())
-                                .getCachedPublicKeyRing(data.getData())
-                                .extractOrGetMasterKeyId();
-                        mSelectKeyFragment.selectKey(masterKeyId);
-                    } catch (PgpGeneralException e) {
-                        Log.e(Constants.TAG, "key not found!", e);
+                    if (data != null && data.hasExtra(OperationResult.EXTRA_RESULT)) {
+                        EditKeyResult result = data.getParcelableExtra(OperationResult.EXTRA_RESULT);
+                        mSelectKeySpinner.setPreSelectedKeyId(result.mMasterKeyId);
+                    } else {
+                        Log.e(Constants.TAG, "missing result!");
                     }
                 }
                 break;
             }
-
-            default:
-                super.onActivityResult(requestCode, resultCode, data);
-
-                break;
         }
-    }
 
-    /**
-     * callback from select secret key fragment
-     */
-    @Override
-    public void onKeySelected(long secretKeyId) {
-        mAccSettings.setKeyId(secretKeyId);
+        // execute activity's onActivityResult to show log notify
+        super.onActivityResult(requestCode, resultCode, data);
     }
-
 }

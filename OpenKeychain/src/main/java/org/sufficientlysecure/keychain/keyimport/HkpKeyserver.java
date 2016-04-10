@@ -18,45 +18,41 @@
 
 package org.sufficientlysecure.keychain.keyimport;
 
-import org.apache.http.HttpEntity;
-import org.apache.http.HttpResponse;
-import org.apache.http.HttpStatus;
-import org.apache.http.NameValuePair;
-import org.apache.http.client.HttpClient;
-import org.apache.http.client.entity.UrlEncodedFormEntity;
-import org.apache.http.client.methods.HttpGet;
-import org.apache.http.client.methods.HttpPost;
-import org.apache.http.impl.client.DefaultHttpClient;
-import org.apache.http.message.BasicNameValuePair;
-import org.apache.http.util.EntityUtils;
+
+
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 import org.sufficientlysecure.keychain.Constants;
 import org.sufficientlysecure.keychain.pgp.PgpHelper;
-import org.sufficientlysecure.keychain.pgp.PgpKeyHelper;
+import org.sufficientlysecure.keychain.ui.util.KeyFormattingUtils;
 import org.sufficientlysecure.keychain.util.Log;
-import org.xbill.DNS.Lookup;
-import org.xbill.DNS.Record;
-import org.xbill.DNS.SRVRecord;
-import org.xbill.DNS.Type;
+import org.sufficientlysecure.keychain.util.OkHttpClientFactory;
+import org.sufficientlysecure.keychain.util.TlsHelper;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
-import java.net.HttpURLConnection;
-import java.net.InetAddress;
-import java.net.MalformedURLException;
+import java.net.Proxy;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
-import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.GregorianCalendar;
-import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import android.support.annotation.NonNull;
+
+import de.measite.minidns.Client;
+import de.measite.minidns.Question;
+import de.measite.minidns.Record;
+import de.measite.minidns.record.SRV;
 
 public class HkpKeyserver extends Keyserver {
     private static class HttpError extends Exception {
@@ -81,6 +77,7 @@ public class HkpKeyserver extends Keyserver {
 
     private String mHost;
     private short mPort;
+    private Proxy mProxy;
     private boolean mSecure;
 
     /**
@@ -116,8 +113,9 @@ public class HkpKeyserver extends Keyserver {
      */
     public static final Pattern PUB_KEY_LINE = Pattern
             .compile("pub:([0-9a-fA-F]+):([0-9]+):([0-9]+):([0-9]+):([0-9]*):([rde]*)[ \n\r]*" // pub line
-                    + "((uid:([^:]*):([0-9]+):([0-9]*):([rde]*)[ \n\r]*)+)", // one or more uid lines
-                    Pattern.CASE_INSENSITIVE);
+                            + "((uid:([^:]*):([0-9]+):([0-9]*):([rde]*)[ \n\r]*)+)", // one or more uid lines
+                    Pattern.CASE_INSENSITIVE
+            );
 
     /**
      * uid:%escaped uid string%:%creationdate%:%expirationdate%:%flags%
@@ -156,17 +154,17 @@ public class HkpKeyserver extends Keyserver {
      *                    connect using {@link #PORT_DEFAULT}. However, port may be specified after colon
      *                    ("<code>hostname:port</code>", eg. "<code>p80.pool.sks-keyservers.net:80</code>").
      */
-    public HkpKeyserver(String hostAndPort) {
+    public HkpKeyserver(String hostAndPort, Proxy proxy) {
         String host = hostAndPort;
         short port = PORT_DEFAULT;
         boolean secure = false;
         String[] parts = hostAndPort.split(":");
         if (parts.length > 1) {
             if (!parts[0].contains(".")) { // This is not a domain or ip, so it must be a protocol name
-                if (parts[0].equalsIgnoreCase("hkps") || parts[0].equalsIgnoreCase("https")) {
+                if ("hkps".equalsIgnoreCase(parts[0]) || "https".equalsIgnoreCase(parts[0])) {
                     secure = true;
                     port = PORT_DEFAULT_HKPS;
-                } else if (!parts[0].equalsIgnoreCase("hkp") && !parts[0].equalsIgnoreCase("http")) {
+                } else if (!"hkp".equalsIgnoreCase(parts[0]) && !"http".equalsIgnoreCase(parts[0])) {
                     throw new IllegalArgumentException("Protocol " + parts[0] + " is unknown");
                 }
                 host = parts[1];
@@ -183,16 +181,18 @@ public class HkpKeyserver extends Keyserver {
         }
         mHost = host;
         mPort = port;
+        mProxy = proxy;
         mSecure = secure;
     }
 
-    public HkpKeyserver(String host, short port) {
-        this(host, port, false);
+    public HkpKeyserver(String host, short port, Proxy proxy) {
+        this(host, port, proxy, false);
     }
 
-    public HkpKeyserver(String host, short port, boolean secure) {
+    public HkpKeyserver(String host, short port, Proxy proxy, boolean secure) {
         mHost = host;
         mPort = port;
+        mProxy = proxy;
         mSecure = secure;
     }
 
@@ -200,54 +200,38 @@ public class HkpKeyserver extends Keyserver {
         return mSecure ? "https://" : "http://";
     }
 
-    private String query(String request) throws QueryFailedException, HttpError {
-        List<String> urls = new ArrayList<String>();
-        if (mSecure) {
-            urls.add(getUrlPrefix() + mHost + ":" + mPort + request);
-        } else {
-            InetAddress ips[];
-            try {
-                ips = InetAddress.getAllByName(mHost);
-            } catch (UnknownHostException e) {
-                throw new QueryFailedException(e.toString());
-            }
-            for (InetAddress ip : ips) {
-                // Note: This is actually not HTTP 1.1 compliant, as we hide the real "Host" value,
-                //       but Android's HTTPUrlConnection does not support any other way to set
-                //       Socket's remote IP address...
-                urls.add(getUrlPrefix() + ip.getHostAddress() + ":" + mPort + request);
-            }
-        }
 
-        for (String url : urls) {
-            try {
-                Log.d(Constants.TAG, "hkp keyserver query: " + url);
-                URL realUrl = new URL(url);
-                HttpURLConnection conn = (HttpURLConnection) realUrl.openConnection();
-                conn.setConnectTimeout(5000);
-                conn.setReadTimeout(25000);
-                conn.connect();
-                int response = conn.getResponseCode();
-                if (response >= 200 && response < 300) {
-                    return readAll(conn.getInputStream(), conn.getContentEncoding());
-                } else {
-                    String data = readAll(conn.getErrorStream(), conn.getContentEncoding());
-                    throw new HttpError(response, data);
-                }
-            } catch (MalformedURLException e) {
-                // nothing to do, try next IP
-            } catch (IOException e) {
-                // nothing to do, try next IP
-            }
-        }
+    private String query(String request, @NonNull Proxy proxy) throws QueryFailedException, HttpError {
+        try {
+            URL url = new URL(getUrlPrefix() + mHost + ":" + mPort + request);
+            Log.d(Constants.TAG, "hkp keyserver query: " + url + " Proxy: " + proxy);
+            OkHttpClient client = OkHttpClientFactory.getClientPinnedIfAvailable(url, proxy);
+            Response response = client.newCall(new Request.Builder().url(url).build()).execute();
 
-        throw new QueryFailedException("querying server(s) for '" + mHost + "' failed");
+            String responseBody = response.body().string(); // contains body both in case of success or failure
+
+            if (response.isSuccessful()) {
+                return responseBody;
+            } else {
+                throw new HttpError(response.code(), responseBody);
+            }
+        } catch (IOException e) {
+            Log.e(Constants.TAG, "IOException at HkpKeyserver", e);
+            throw new QueryFailedException("Keyserver '" + mHost + "' is unavailable. Check your Internet connection!" +
+                    (proxy == Proxy.NO_PROXY ? "" : " Using proxy " + proxy));
+        } catch (TlsHelper.TlsHelperException e) {
+            Log.e(Constants.TAG, "Exception in pinning certs", e);
+            throw new QueryFailedException("Exception in pinning certs");
+        }
     }
 
+    /**
+     * Results are sorted by creation date of key!
+     */
     @Override
     public ArrayList<ImportKeysListEntry> search(String query) throws QueryFailedException,
             QueryNeedsRepairException {
-        ArrayList<ImportKeysListEntry> results = new ArrayList<ImportKeysListEntry>();
+        ArrayList<ImportKeysListEntry> results = new ArrayList<>();
 
         if (query.length() < 3) {
             throw new QueryTooShortException();
@@ -255,7 +239,7 @@ public class HkpKeyserver extends Keyserver {
 
         String encodedQuery;
         try {
-            encodedQuery = URLEncoder.encode(query, "utf8");
+            encodedQuery = URLEncoder.encode(query, "UTF8");
         } catch (UnsupportedEncodingException e) {
             return null;
         }
@@ -263,64 +247,97 @@ public class HkpKeyserver extends Keyserver {
 
         String data;
         try {
-            data = query(request);
+            data = query(request, mProxy);
         } catch (HttpError e) {
-            if (e.getCode() == 404) {
-                return results;
-            } else {
-                if (e.getData().toLowerCase(Locale.US).contains("no keys found")) {
+            if (e.getData() != null) {
+                Log.d(Constants.TAG, "returned error data: " + e.getData().toLowerCase(Locale.ENGLISH));
+
+                if (e.getData().toLowerCase(Locale.ENGLISH).contains("no keys found")) {
+                    // NOTE: This is also a 404 error for some keyservers!
                     return results;
-                } else if (e.getData().toLowerCase(Locale.US).contains("too many")) {
+                } else if (e.getData().toLowerCase(Locale.ENGLISH).contains("too many")) {
                     throw new TooManyResponsesException();
-                } else if (e.getData().toLowerCase(Locale.US).contains("insufficient")) {
+                } else if (e.getData().toLowerCase(Locale.ENGLISH).contains("insufficient")) {
                     throw new QueryTooShortException();
+                } else if (e.getCode() == 404) {
+                    // NOTE: handle this 404 at last, maybe it was a "no keys found" error
+                    throw new QueryFailedException("Keyserver '" + mHost + "' not found. Error 404");
+                } else {
+                    // NOTE: some keyserver do not provide a more detailed error response
+                    throw new QueryTooShortOrTooManyResponsesException();
                 }
             }
-            throw new QueryFailedException("querying server(s) for '" + mHost + "' failed");
+
+            throw new QueryFailedException("Querying server(s) for '" + mHost + "' failed.");
         }
 
         final Matcher matcher = PUB_KEY_LINE.matcher(data);
         while (matcher.find()) {
             final ImportKeysListEntry entry = new ImportKeysListEntry();
             entry.setQuery(query);
-            entry.setOrigin(getUrlPrefix() + mHost + ":" + mPort);
-
-            entry.setBitStrength(Integer.parseInt(matcher.group(3)));
-
-            final int algorithmId = Integer.decode(matcher.group(2));
-            entry.setAlgorithm(PgpKeyHelper.getAlgorithmInfo(algorithmId));
+            entry.addOrigin(getUrlPrefix() + mHost + ":" + mPort);
 
             // group 1 contains the full fingerprint (v4) or the long key id if available
-            // see http://bit.ly/1d4bxbk and http://bit.ly/1gD1wwr
-            String fingerprintOrKeyId = matcher.group(1);
-            if (fingerprintOrKeyId.length() > 16) {
-                entry.setFingerprintHex(fingerprintOrKeyId.toLowerCase(Locale.US));
+            // see https://bitbucket.org/skskeyserver/sks-keyserver/pull-request/12/fixes-for-machine-readable-indexes/diff
+            String fingerprintOrKeyId = matcher.group(1).toLowerCase(Locale.ENGLISH);
+            if (fingerprintOrKeyId.length() == 40) {
+                entry.setFingerprintHex(fingerprintOrKeyId);
                 entry.setKeyIdHex("0x" + fingerprintOrKeyId.substring(fingerprintOrKeyId.length()
                         - 16, fingerprintOrKeyId.length()));
-            } else {
+            } else if (fingerprintOrKeyId.length() == 16) {
                 // set key id only
                 entry.setKeyIdHex("0x" + fingerprintOrKeyId);
+            } else {
+                Log.e(Constants.TAG, "Wrong length for fingerprint/long key id.");
+                // skip this key
+                continue;
             }
 
-            final long creationDate = Long.parseLong(matcher.group(4));
-            final GregorianCalendar tmpGreg = new GregorianCalendar(TimeZone.getTimeZone("UTC"));
-            tmpGreg.setTimeInMillis(creationDate * 1000);
-            entry.setDate(tmpGreg.getTime());
+            try {
+                int bitSize = Integer.parseInt(matcher.group(3));
+                entry.setBitStrength(bitSize);
+                int algorithmId = Integer.decode(matcher.group(2));
+                entry.setAlgorithm(KeyFormattingUtils.getAlgorithmInfo(algorithmId, bitSize, null));
 
-            entry.setRevoked(matcher.group(6).contains("r"));
-            entry.setExpired(matcher.group(6).contains("e"));
+                final long creationDate = Long.parseLong(matcher.group(4));
+                final GregorianCalendar tmpGreg = new GregorianCalendar(TimeZone.getTimeZone("UTC"));
+                tmpGreg.setTimeInMillis(creationDate * 1000);
+                entry.setDate(tmpGreg.getTime());
+            } catch (NumberFormatException e) {
+                Log.e(Constants.TAG, "Conversation for bit size, algorithm, or creation date failed.", e);
+                // skip this key
+                continue;
+            }
 
-            ArrayList<String> userIds = new ArrayList<String>();
+            try {
+                entry.setRevoked(matcher.group(6).contains("r"));
+                entry.setExpired(matcher.group(6).contains("e"));
+            } catch (NullPointerException e) {
+                Log.e(Constants.TAG, "Check for revocation or expiry failed.", e);
+                // skip this key
+                continue;
+            }
+
+            ArrayList<String> userIds = new ArrayList<>();
             final String uidLines = matcher.group(7);
             final Matcher uidMatcher = UID_LINE.matcher(uidLines);
             while (uidMatcher.find()) {
                 String tmp = uidMatcher.group(1).trim();
                 if (tmp.contains("%")) {
+                    if (tmp.contains("%%")) {
+                        // The server encodes a percent sign as %%, so it is swapped out with its
+                        // urlencoded counterpart to prevent errors
+                        tmp = tmp.replace("%%", "%25");
+                    }
                     try {
                         // converts Strings like "Universit%C3%A4t" to a proper encoding form "Universität".
-                        tmp = (URLDecoder.decode(tmp, "UTF8"));
+                        tmp = URLDecoder.decode(tmp, "UTF8");
                     } catch (UnsupportedEncodingException ignored) {
                         // will never happen, because "UTF8" is supported
+                    } catch (IllegalArgumentException e) {
+                        Log.e(Constants.TAG, "User ID encoding broken", e);
+                        // skip this user id
+                        continue;
                     }
                 }
                 userIds.add(tmp);
@@ -335,58 +352,71 @@ public class HkpKeyserver extends Keyserver {
 
     @Override
     public String get(String keyIdHex) throws QueryFailedException {
-        HttpClient client = new DefaultHttpClient();
+        String request = "/pks/lookup?op=get&options=mr&search=" + keyIdHex;
+        Log.d(Constants.TAG, "hkp keyserver get: " + request + " using Proxy: " + mProxy);
+        String data;
         try {
-            String query = getUrlPrefix() + mHost + ":" + mPort +
-                    "/pks/lookup?op=get&options=mr&search=" + keyIdHex;
-            Log.d(Constants.TAG, "hkp keyserver get: " + query);
-            HttpGet get = new HttpGet(query);
-            HttpResponse response = client.execute(get);
-            if (response.getStatusLine().getStatusCode() != HttpStatus.SC_OK) {
-                throw new QueryFailedException("not found");
-            }
-
-            HttpEntity entity = response.getEntity();
-            InputStream is = entity.getContent();
-            String data = readAll(is, EntityUtils.getContentCharSet(entity));
-            Matcher matcher = PgpHelper.PGP_PUBLIC_KEY.matcher(data);
-            if (matcher.find()) {
-                return matcher.group(1);
-            }
-        } catch (IOException e) {
-            // nothing to do, better luck on the next keyserver
-        } finally {
-            client.getConnectionManager().shutdown();
+            data = query(request, mProxy);
+        } catch (HttpError httpError) {
+            Log.d(Constants.TAG, "Failed to get key at HkpKeyserver", httpError);
+            throw new QueryFailedException("not found");
         }
-
-        return null;
+        if (data == null) {
+            throw new QueryFailedException("data is null");
+        }
+        Matcher matcher = PgpHelper.PGP_PUBLIC_KEY.matcher(data);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        throw new QueryFailedException("data is null");
     }
 
     @Override
     public void add(String armoredKey) throws AddKeyException {
-        HttpClient client = new DefaultHttpClient();
         try {
-            String query = getUrlPrefix() + mHost + ":" + mPort + "/pks/add";
-            HttpPost post = new HttpPost(query);
-            Log.d(Constants.TAG, "hkp keyserver add: " + query);
-            List<NameValuePair> nameValuePairs = new ArrayList<NameValuePair>(2);
-            nameValuePairs.add(new BasicNameValuePair("keytext", armoredKey));
-            post.setEntity(new UrlEncodedFormEntity(nameValuePairs));
-
-            HttpResponse response = client.execute(post);
-            if (response.getStatusLine().getStatusCode() != HttpStatus.SC_OK) {
+            String path = "/pks/add";
+            String params;
+            try {
+                params = "keytext=" + URLEncoder.encode(armoredKey, "UTF-8");
+            } catch (UnsupportedEncodingException e) {
                 throw new AddKeyException();
             }
+            URL url = new URL(getUrlPrefix() + mHost + ":" + mPort + path);
+
+            Log.d(Constants.TAG, "hkp keyserver add: " + url);
+            Log.d(Constants.TAG, "params: " + params);
+
+
+            RequestBody body = RequestBody.create(MediaType.parse("application/x-www-form-urlencoded"), params);
+
+            Request request = new Request.Builder()
+                    .url(url)
+                    .addHeader("Content-Type", "application/x-www-form-urlencoded")
+                    .addHeader("Content-Length", Integer.toString(params.getBytes().length))
+                    .post(body)
+                    .build();
+
+            Response response = OkHttpClientFactory.getClientPinnedIfAvailable(url, mProxy).newCall(request).execute();
+
+            Log.d(Constants.TAG, "response code: " + response.code());
+            Log.d(Constants.TAG, "answer: " + response.body().string());
+
+            if (response.code() != 200) {
+                throw new AddKeyException();
+            }
+
         } catch (IOException e) {
-            // nothing to do, better luck on the next keyserver
-        } finally {
-            client.getConnectionManager().shutdown();
+            Log.e(Constants.TAG, "IOException", e);
+            throw new AddKeyException();
+        } catch (TlsHelper.TlsHelperException e) {
+            Log.e(Constants.TAG, "Exception in pinning certs", e);
+            throw new AddKeyException();
         }
     }
 
     @Override
     public String toString() {
-        return mHost + ":" + mPort;
+        return getUrlPrefix() + mHost + ":" + mPort;
     }
 
     /**
@@ -394,21 +424,22 @@ public class HkpKeyserver extends Keyserver {
      *
      * @return A responsible Keyserver or null if not found.
      */
-    public static HkpKeyserver resolve(String domain) {
+    public static HkpKeyserver resolve(String domain, Proxy proxy) {
         try {
-            Record[] records = new Lookup("_hkp._tcp." + domain, Type.SRV).run();
+            Record[] records = new Client().query(new Question("_hkp._tcp." + domain, Record.TYPE.SRV)).getAnswers();
             if (records.length > 0) {
                 Arrays.sort(records, new Comparator<Record>() {
                     @Override
                     public int compare(Record lhs, Record rhs) {
-                        if (!(lhs instanceof SRVRecord)) return 1;
-                        if (!(rhs instanceof SRVRecord)) return -1;
-                        return ((SRVRecord) lhs).getPriority() - ((SRVRecord) rhs).getPriority();
+                        if (lhs.getPayload().getType() != Record.TYPE.SRV) return 1;
+                        if (rhs.getPayload().getType() != Record.TYPE.SRV) return -1;
+                        return ((SRV) lhs.getPayload()).getPriority() - ((SRV) rhs.getPayload()).getPriority();
                     }
                 });
                 Record record = records[0]; // This is our best choice
-                if (record instanceof SRVRecord) {
-                    return new HkpKeyserver(((SRVRecord) record).getTarget().toString(), (short) ((SRVRecord) record).getPort());
+                if (record.getPayload().getType() == Record.TYPE.SRV) {
+                    return new HkpKeyserver(((SRV) record.getPayload()).getName(),
+                            (short) ((SRV) record.getPayload()).getPort(), proxy);
                 }
             }
         } catch (Exception ignored) {

@@ -18,20 +18,15 @@
 
 package org.sufficientlysecure.keychain.pgp;
 
-import android.content.Context;
-import android.content.pm.PackageInfo;
-import android.content.pm.PackageManager.NameNotFoundException;
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import android.support.annotation.NonNull;
+import android.text.TextUtils;
 
 import org.sufficientlysecure.keychain.Constants;
-import org.sufficientlysecure.keychain.R;
 import org.sufficientlysecure.keychain.util.Log;
-
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.RandomAccessFile;
-import java.security.SecureRandom;
-import java.util.regex.Pattern;
 
 public class PgpHelper {
 
@@ -47,121 +42,80 @@ public class PgpHelper {
             ".*?(-----BEGIN PGP PUBLIC KEY BLOCK-----.*?-----END PGP PUBLIC KEY BLOCK-----).*",
             Pattern.DOTALL);
 
-    public static String getVersion(Context context) {
-        String version;
-        try {
-            PackageInfo pi = context.getPackageManager().getPackageInfo(Constants.PACKAGE_NAME, 0);
-            version = pi.versionName;
-            return version;
-        } catch (NameNotFoundException e) {
-            Log.e(Constants.TAG, "Version could not be retrieved!", e);
-            return "0.0";
+    /**
+     * Fixing broken PGP MESSAGE Strings coming from GMail/AOSP Mail
+     */
+    public static String fixPgpMessage(String message) {
+        // windows newline -> unix newline
+        message = message.replaceAll("\r\n", "\n");
+        // Mac OS before X newline -> unix newline
+        message = message.replaceAll("\r", "\n");
+
+        // remove whitespaces before newline
+        message = message.replaceAll(" +\n", "\n");
+        // only two consecutive newlines are allowed
+        message = message.replaceAll("\n\n+", "\n\n");
+
+        // replace non breakable spaces
+        message = message.replaceAll("\\xa0", " ");
+
+        return message;
+    }
+
+    /**
+     * Fixing broken PGP SIGNED MESSAGE Strings coming from GMail/AOSP Mail
+     */
+    public static String fixPgpCleartextSignature(CharSequence input) {
+        if (!TextUtils.isEmpty(input)) {
+            String text = input.toString();
+
+            // windows newline -> unix newline
+            text = text.replaceAll("\r\n", "\n");
+            // Mac OS before X newline -> unix newline
+            text = text.replaceAll("\r", "\n");
+
+            return text;
+        } else {
+            return null;
         }
     }
 
-    public static String getFullVersion(Context context) {
-        return "OpenPGP Keychain v" + getVersion(context);
-    }
+    public static String getPgpMessageContent(@NonNull CharSequence input) {
+        Log.dEscaped(Constants.TAG, "input: " + input);
 
-//    public static final class content {
-//        public static final int unknown = 0;
-//        public static final int encrypted_data = 1;
-//        public static final int keys = 2;
-//    }
-//
-//    public static int getStreamContent(Context context, InputStream inStream) throws IOException {
-//
-//        InputStream in = PGPUtil.getDecoderStream(inStream);
-//        PGPObjectFactory pgpF = new PGPObjectFactory(in);
-//        Object object = pgpF.nextObject();
-//        while (object != null) {
-//            if (object instanceof PGPPublicKeyRing || object instanceof PGPSecretKeyRing) {
-//                return Id.content.keys;
-//            } else if (object instanceof PGPEncryptedDataList) {
-//                return Id.content.encrypted_data;
-//            }
-//            object = pgpF.nextObject();
-//        }
-//
-//        return Id.content.unknown;
-//    }
+        Matcher matcher = PgpHelper.PGP_MESSAGE.matcher(input);
+        if (matcher.matches()) {
+            String text = matcher.group(1);
+            text = fixPgpMessage(text);
 
-    /**
-     * Generate a random filename
-     *
-     * @param length
-     * @return
-     */
-    public static String generateRandomFilename(int length) {
-        SecureRandom random = new SecureRandom();
+            Log.dEscaped(Constants.TAG, "input fixed: " + text);
+            return text;
+        } else {
+            matcher = PgpHelper.PGP_CLEARTEXT_SIGNATURE.matcher(input);
+            if (matcher.matches()) {
+                String text = matcher.group(1);
+                text = fixPgpCleartextSignature(text);
 
-        byte bytes[] = new byte[length];
-        random.nextBytes(bytes);
-        String result = "";
-        for (int i = 0; i < length; ++i) {
-            int v = (bytes[i] + 256) % 64;
-            if (v < 10) {
-                result += (char) ('0' + v);
-            } else if (v < 36) {
-                result += (char) ('A' + v - 10);
-            } else if (v < 62) {
-                result += (char) ('a' + v - 36);
-            } else if (v == 62) {
-                result += '_';
-            } else if (v == 63) {
-                result += '.';
+                Log.dEscaped(Constants.TAG, "input fixed: " + text);
+                return text;
+            } else {
+                return null;
             }
         }
-        return result;
     }
 
-    /**
-     * Go once through stream to get length of stream. The length is later used to display progress
-     * when encrypting/decrypting
-     *
-     * @param in
-     * @return
-     * @throws IOException
-     */
-    public static long getLengthOfStream(InputStream in) throws IOException {
-        long size = 0;
-        long n = 0;
-        byte dummy[] = new byte[0x10000];
-        while ((n = in.read(dummy)) > 0) {
-            size += n;
+    public static String getPgpKeyContent(@NonNull CharSequence input) {
+        Log.dEscaped(Constants.TAG, "input: " + input);
+
+        Matcher matcher = PgpHelper.PGP_PUBLIC_KEY.matcher(input);
+        if (matcher.matches()) {
+            String text = matcher.group(1);
+            text = fixPgpMessage(text);
+
+            Log.dEscaped(Constants.TAG, "input fixed: " + text);
+            return text;
         }
-        return size;
+        return null;
     }
 
-    /**
-     * Deletes file securely by overwriting it with random data before deleting it.
-     * <p/>
-     * TODO: Does this really help on flash storage?
-     *
-     * @param context
-     * @param progressable
-     * @param file
-     * @throws IOException
-     */
-    public static void deleteFileSecurely(Context context, Progressable progressable, File file)
-            throws IOException {
-        long length = file.length();
-        SecureRandom random = new SecureRandom();
-        RandomAccessFile raf = new RandomAccessFile(file, "rws");
-        raf.seek(0);
-        raf.getFilePointer();
-        byte[] data = new byte[1 << 16];
-        int pos = 0;
-        String msg = context.getString(R.string.progress_deleting_securely, file.getName());
-        while (pos < length) {
-            if (progressable != null) {
-                progressable.setProgress(msg, (int) (100 * pos / length), 100);
-            }
-            random.nextBytes(data);
-            raf.write(data);
-            pos += data.length;
-        }
-        raf.close();
-        file.delete();
-    }
 }

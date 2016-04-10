@@ -20,19 +20,21 @@ package org.sufficientlysecure.keychain.remote.ui;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
-import android.support.v7.app.ActionBarActivity;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 
 import org.sufficientlysecure.keychain.Constants;
 import org.sufficientlysecure.keychain.R;
-import org.sufficientlysecure.keychain.helper.ActionBarHelper;
-import org.sufficientlysecure.keychain.provider.ProviderHelper;
+import org.sufficientlysecure.keychain.operations.results.OperationResult;
+import org.sufficientlysecure.keychain.operations.results.OperationResult.LogType;
+import org.sufficientlysecure.keychain.operations.results.SingletonResult;
+import org.sufficientlysecure.keychain.provider.ApiDataAccessObject;
 import org.sufficientlysecure.keychain.remote.AccountSettings;
+import org.sufficientlysecure.keychain.ui.base.BaseActivity;
 import org.sufficientlysecure.keychain.util.Log;
 
-public class AccountSettingsActivity extends ActionBarActivity {
+public class AccountSettingsActivity extends BaseActivity {
     private Uri mAccountUri;
 
     private AccountSettingsFragment mAccountSettingsFragment;
@@ -42,17 +44,20 @@ public class AccountSettingsActivity extends ActionBarActivity {
         super.onCreate(savedInstanceState);
 
         // Inflate a "Done" custom action bar
-        ActionBarHelper.setOneButtonView(getSupportActionBar(),
-                R.string.api_settings_save, R.drawable.ic_action_done,
+        setFullScreenDialogDoneClose(R.string.api_settings_save,
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        // "Done"
                         save();
                     }
+                },
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        finish();
+                    }
                 });
-
-        setContentView(R.layout.api_account_settings_activity);
+        setTitle(null);
 
         mAccountSettingsFragment = (AccountSettingsFragment) getSupportFragmentManager().findFragmentById(
                 R.id.api_account_settings_fragment);
@@ -70,6 +75,11 @@ public class AccountSettingsActivity extends ActionBarActivity {
     }
 
     @Override
+    protected void initLayout() {
+        setContentView(R.layout.api_account_settings_activity);
+    }
+
+    @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         super.onCreateOptionsMenu(menu);
         getMenuInflater().inflate(R.menu.api_account_settings, menu);
@@ -79,18 +89,16 @@ public class AccountSettingsActivity extends ActionBarActivity {
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
         switch (item.getItemId()) {
-            case R.id.menu_account_settings_delete:
+            case R.id.menu_account_settings_delete: {
                 deleteAccount();
                 return true;
-            case R.id.menu_account_settings_cancel:
-                finish();
-                return true;
+            }
         }
         return super.onOptionsItemSelected(item);
     }
 
     private void loadData(Uri accountUri) {
-        AccountSettings settings = new ProviderHelper(this).getApiAccountSettings(accountUri);
+        AccountSettings settings = new ApiDataAccessObject(this).getApiAccountSettings(accountUri);
         mAccountSettingsFragment.setAccSettings(settings);
     }
 
@@ -102,8 +110,24 @@ public class AccountSettingsActivity extends ActionBarActivity {
     }
 
     private void save() {
-        new ProviderHelper(this).updateApiAccount(mAccountSettingsFragment.getAccSettings(), mAccountUri);
+        new ApiDataAccessObject(this).updateApiAccount(mAccountUri, mAccountSettingsFragment.getAccSettings());
+        SingletonResult result = new SingletonResult(
+                SingletonResult.RESULT_OK, LogType.MSG_ACC_SAVED);
+        Intent intent = new Intent();
+        intent.putExtra(SingletonResult.EXTRA_RESULT, result);
+        setResult(RESULT_OK, intent);
         finish();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        // if a result has been returned, display a notify
+        if (data != null && data.hasExtra(OperationResult.EXTRA_RESULT)) {
+            OperationResult result = data.getParcelableExtra(OperationResult.EXTRA_RESULT);
+            result.createNotify(this).show();
+        } else {
+            super.onActivityResult(requestCode, resultCode, data);
+        }
     }
 
 }

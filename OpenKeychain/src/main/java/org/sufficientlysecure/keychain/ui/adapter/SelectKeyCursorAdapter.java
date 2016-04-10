@@ -20,20 +20,21 @@ package org.sufficientlysecure.keychain.ui.adapter;
 import android.content.Context;
 import android.database.Cursor;
 import android.support.v4.widget.CursorAdapter;
+import android.text.format.DateUtils;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.CheckBox;
+import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.TextView;
 
 import org.sufficientlysecure.keychain.R;
 import org.sufficientlysecure.keychain.pgp.KeyRing;
-import org.sufficientlysecure.keychain.pgp.PgpKeyHelper;
 import org.sufficientlysecure.keychain.provider.KeychainContract.KeyRings;
-import org.sufficientlysecure.keychain.util.Highlighter;
-
-import java.util.Date;
+import org.sufficientlysecure.keychain.ui.util.Highlighter;
+import org.sufficientlysecure.keychain.ui.util.KeyFormattingUtils;
+import org.sufficientlysecure.keychain.ui.util.KeyFormattingUtils.State;
 
 
 /**
@@ -44,7 +45,8 @@ abstract public class SelectKeyCursorAdapter extends CursorAdapter {
     private String mQuery;
     private LayoutInflater mInflater;
 
-    protected int mIndexUserId, mIndexMasterKeyId, mIndexRevoked, mIndexExpiry;
+    protected int mIndexUserId, mIndexMasterKeyId, mIndexIsExpiry, mIndexIsRevoked,
+            mIndexDuplicateUserId, mIndexCreation;
 
     public SelectKeyCursorAdapter(Context context, Cursor c, int flags, ListView listView) {
         super(context, c, flags);
@@ -73,8 +75,10 @@ abstract public class SelectKeyCursorAdapter extends CursorAdapter {
         if (cursor != null) {
             mIndexUserId = cursor.getColumnIndexOrThrow(KeyRings.USER_ID);
             mIndexMasterKeyId = cursor.getColumnIndexOrThrow(KeyRings.MASTER_KEY_ID);
-            mIndexExpiry = cursor.getColumnIndexOrThrow(KeyRings.EXPIRY);
-            mIndexRevoked = cursor.getColumnIndexOrThrow(KeyRings.IS_REVOKED);
+            mIndexIsExpiry = cursor.getColumnIndexOrThrow(KeyRings.IS_EXPIRED);
+            mIndexIsRevoked = cursor.getColumnIndexOrThrow(KeyRings.IS_REVOKED);
+            mIndexDuplicateUserId = cursor.getColumnIndexOrThrow(KeyRings.HAS_DUPLICATE_USER_ID);
+            mIndexCreation = cursor.getColumnIndexOrThrow(KeyRings.CREATION);
         }
     }
 
@@ -90,7 +94,8 @@ abstract public class SelectKeyCursorAdapter extends CursorAdapter {
 
     public static class ViewHolderItem {
         public View view;
-        public TextView mainUserId, mainUserIdRest, keyId, status;
+        public TextView mainUserId, mainUserIdRest, creation;
+        public ImageView statusIcon;
         public CheckBox selected;
 
         public void setEnabled(boolean enabled) {
@@ -98,8 +103,8 @@ abstract public class SelectKeyCursorAdapter extends CursorAdapter {
             selected.setEnabled(enabled);
             mainUserId.setEnabled(enabled);
             mainUserIdRest.setEnabled(enabled);
-            keyId.setEnabled(enabled);
-            status.setEnabled(enabled);
+            creation.setEnabled(enabled);
+            statusIcon.setEnabled(enabled);
 
             // Sorta special: We set an item as clickable to disable it in the ListView. This works
             // because the list item will handle the clicks itself (which is a nop)
@@ -113,36 +118,49 @@ abstract public class SelectKeyCursorAdapter extends CursorAdapter {
         ViewHolderItem h = (ViewHolderItem) view.getTag();
 
         String userId = cursor.getString(mIndexUserId);
-        String[] userIdSplit = KeyRing.splitUserId(userId);
+        KeyRing.UserId userIdSplit = KeyRing.splitUserId(userId);
 
-        if (userIdSplit[0] != null) {
-            h.mainUserId.setText(highlighter.highlight(userIdSplit[0]));
+        if (userIdSplit.name != null) {
+            h.mainUserId.setText(highlighter.highlight(userIdSplit.name));
         } else {
             h.mainUserId.setText(R.string.user_id_no_name);
         }
-        if (userIdSplit[1] != null) {
+        if (userIdSplit.email != null) {
             h.mainUserIdRest.setVisibility(View.VISIBLE);
-            h.mainUserIdRest.setText(highlighter.highlight(userIdSplit[1]));
+            h.mainUserIdRest.setText(highlighter.highlight(userIdSplit.email));
         } else {
             h.mainUserIdRest.setVisibility(View.GONE);
         }
 
-        long masterKeyId = cursor.getLong(mIndexMasterKeyId);
-        h.keyId.setText(PgpKeyHelper.convertKeyIdToHex(masterKeyId));
-
-        boolean enabled = true;
-        if (cursor.getInt(mIndexRevoked) != 0) {
-            h.status.setText(R.string.revoked);
-            enabled = false;
-        } else if (!cursor.isNull(mIndexExpiry)
-                && new Date(cursor.getLong(mIndexExpiry) * 1000).before(new Date())) {
-            h.status.setText(R.string.expired);
-            enabled = false;
+        boolean duplicate = cursor.getLong(mIndexDuplicateUserId) > 0;
+        if (duplicate) {
+            String dateTime = DateUtils.formatDateTime(context,
+                    cursor.getLong(mIndexCreation) * 1000,
+                    DateUtils.FORMAT_SHOW_DATE
+                            | DateUtils.FORMAT_SHOW_TIME
+                            | DateUtils.FORMAT_SHOW_YEAR
+                            | DateUtils.FORMAT_ABBREV_MONTH);
+            h.creation.setText(context.getString(R.string.label_key_created, dateTime));
+            h.creation.setVisibility(View.VISIBLE);
         } else {
-            h.status.setText("");
+            h.creation.setVisibility(View.GONE);
         }
 
-        h.status.setTag(enabled);
+        boolean enabled;
+        if (cursor.getInt(mIndexIsRevoked) != 0) {
+            h.statusIcon.setVisibility(View.VISIBLE);
+            KeyFormattingUtils.setStatusImage(mContext, h.statusIcon, null, State.REVOKED, R.color.key_flag_gray);
+            enabled = false;
+        } else if (cursor.getInt(mIndexIsExpiry) != 0) {
+            h.statusIcon.setVisibility(View.VISIBLE);
+            KeyFormattingUtils.setStatusImage(mContext, h.statusIcon, null, State.EXPIRED, R.color.key_flag_gray);
+            enabled = false;
+        } else {
+            h.statusIcon.setVisibility(View.GONE);
+            enabled = true;
+        }
+
+        h.statusIcon.setTag(enabled);
     }
 
     @Override
@@ -150,10 +168,10 @@ abstract public class SelectKeyCursorAdapter extends CursorAdapter {
         View view = mInflater.inflate(R.layout.select_key_item, null);
         ViewHolderItem holder = new ViewHolderItem();
         holder.view = view;
-        holder.mainUserId = (TextView) view.findViewById(R.id.mainUserId);
-        holder.mainUserIdRest = (TextView) view.findViewById(R.id.mainUserIdRest);
-        holder.keyId = (TextView) view.findViewById(R.id.keyId);
-        holder.status = (TextView) view.findViewById(R.id.status);
+        holder.mainUserId = (TextView) view.findViewById(R.id.select_key_item_name);
+        holder.mainUserIdRest = (TextView) view.findViewById(R.id.select_key_item_email);
+        holder.creation = (TextView) view.findViewById(R.id.select_key_item_creation);
+        holder.statusIcon = (ImageView) view.findViewById(R.id.select_key_item_status_icon);
         holder.selected = (CheckBox) view.findViewById(R.id.selected);
         view.setTag(holder);
         return view;

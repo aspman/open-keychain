@@ -17,110 +17,193 @@
 
 package org.sufficientlysecure.keychain.ui;
 
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+
+import android.Manifest;
 import android.app.Activity;
+import android.content.ContentResolver;
+import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.support.annotation.NonNull;
 import android.support.v4.app.ListFragment;
 import android.support.v4.app.LoaderManager;
+import android.support.v4.content.ContextCompat;
 import android.support.v4.content.Loader;
 import android.support.v4.util.LongSparseArray;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.View.OnTouchListener;
 import android.widget.ListView;
-
-import com.devspark.appmsg.AppMsg;
+import android.widget.Toast;
 
 import org.sufficientlysecure.keychain.Constants;
 import org.sufficientlysecure.keychain.R;
-import org.sufficientlysecure.keychain.helper.Preferences;
 import org.sufficientlysecure.keychain.keyimport.ImportKeysListEntry;
-import org.sufficientlysecure.keychain.keyimport.Keyserver;
 import org.sufficientlysecure.keychain.keyimport.ParcelableKeyRing;
+import org.sufficientlysecure.keychain.operations.results.GetKeyResult;
+import org.sufficientlysecure.keychain.service.input.RequiredInputParcel;
 import org.sufficientlysecure.keychain.ui.adapter.AsyncTaskResultWrapper;
 import org.sufficientlysecure.keychain.ui.adapter.ImportKeysAdapter;
-import org.sufficientlysecure.keychain.ui.adapter.ImportKeysListKeybaseLoader;
+import org.sufficientlysecure.keychain.ui.adapter.ImportKeysListCloudLoader;
 import org.sufficientlysecure.keychain.ui.adapter.ImportKeysListLoader;
-import org.sufficientlysecure.keychain.ui.adapter.ImportKeysListServerLoader;
-import org.sufficientlysecure.keychain.util.InputData;
 import org.sufficientlysecure.keychain.util.Log;
-
-import java.io.ByteArrayInputStream;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.List;
+import org.sufficientlysecure.keychain.util.ParcelableFileCache.IteratorWithSize;
+import org.sufficientlysecure.keychain.util.ParcelableProxy;
+import org.sufficientlysecure.keychain.util.Preferences;
+import org.sufficientlysecure.keychain.util.orbot.OrbotHelper;
 
 public class ImportKeysListFragment extends ListFragment implements
         LoaderManager.LoaderCallbacks<AsyncTaskResultWrapper<ArrayList<ImportKeysListEntry>>> {
+
     private static final String ARG_DATA_URI = "uri";
     private static final String ARG_BYTES = "bytes";
-    private static final String ARG_SERVER_QUERY = "query";
+    public static final String ARG_SERVER_QUERY = "query";
+    public static final String ARG_NON_INTERACTIVE = "non_interactive";
+    public static final String ARG_CLOUD_SEARCH_PREFS = "cloud_search_prefs";
+
+    private static final int REQUEST_PERMISSION_READ_EXTERNAL_STORAGE = 12;
 
     private Activity mActivity;
     private ImportKeysAdapter mAdapter;
+    private ParcelableProxy mParcelableProxy;
 
-    private byte[] mKeyBytes;
-    private Uri mDataUri;
-    private String mServerQuery;
-    private String mKeyServer;
-    private String mKeybaseQuery;
+    private LoaderState mLoaderState;
 
     private static final int LOADER_ID_BYTES = 0;
-    private static final int LOADER_ID_SERVER_QUERY = 1;
-    private static final int LOADER_ID_KEYBASE = 2;
+    private static final int LOADER_ID_CLOUD = 1;
 
     private LongSparseArray<ParcelableKeyRing> mCachedKeyData;
+    private boolean mNonInteractive;
 
-    public byte[] getKeyBytes() {
-        return mKeyBytes;
-    }
+    private boolean mShowingOrbotDialog;
 
-    public Uri getDataUri() {
-        return mDataUri;
-    }
-
-    public String getServerQuery() {
-        return mServerQuery;
-    }
-
-    public String getKeybaseQuery() {
-        return mKeybaseQuery;
-    }
-
-    public String getKeyServer() {
-        return mKeyServer;
+    public LoaderState getLoaderState() {
+        return mLoaderState;
     }
 
     public List<ImportKeysListEntry> getData() {
         return mAdapter.getData();
     }
 
-    public ArrayList<ParcelableKeyRing> getSelectedData() {
-        ArrayList<ParcelableKeyRing> result = new ArrayList<ParcelableKeyRing>();
-        for(ImportKeysListEntry entry : getSelectedEntries()) {
-            result.add(mCachedKeyData.get(entry.getKeyId()));
-        }
-        return result;
+    /**
+     * Returns an Iterator (with size) of the selected data items.
+     * This iterator is sort of a tradeoff, it's slightly more complex than an
+     * ArrayList would have been, but we save some memory by just returning
+     * relevant elements on demand.
+     */
+    public IteratorWithSize<ParcelableKeyRing> getSelectedData() {
+        final ArrayList<ImportKeysListEntry> entries = getSelectedEntries();
+        final Iterator<ImportKeysListEntry> it = entries.iterator();
+        return new IteratorWithSize<ParcelableKeyRing>() {
+
+            @Override
+            public int getSize() {
+                return entries.size();
+            }
+
+            @Override
+            public boolean hasNext() {
+                return it.hasNext();
+            }
+
+            @Override
+            public ParcelableKeyRing next() {
+                // throws NoSuchElementException if it doesn't exist, but that's not our problem
+                return mCachedKeyData.get(it.next().hashCode());
+            }
+
+            @Override
+            public void remove() {
+                it.remove();
+            }
+        };
     }
 
     public ArrayList<ImportKeysListEntry> getSelectedEntries() {
-        return mAdapter.getSelectedEntries();
+        if (mAdapter != null) {
+            return mAdapter.getSelectedEntries();
+        } else {
+            Log.e(Constants.TAG, "Adapter not initialized, returning empty list");
+            return new ArrayList<>();
+        }
+
     }
 
     /**
-     * Creates new instance of this fragment
+     * Creates an interactive ImportKeyListFragment which reads keyrings from bytes, or file specified
+     * by dataUri, or searches a keyserver for serverQuery, if parameter is not null, in that order
+     * Will immediately load data if non-null bytes/dataUri/serverQuery
+     *
+     * @param bytes            byte data containing list of keyrings to be imported
+     * @param dataUri          file from which keyrings are to be imported
+     * @param serverQuery      query to search for on keyserver
+     * @param cloudSearchPrefs search parameters to use. If null will retrieve from user's
+     *                         preferences.
+     * @return fragment with arguments set based on passed parameters
      */
-    public static ImportKeysListFragment newInstance(byte[] bytes, Uri dataUri, String serverQuery) {
+    public static ImportKeysListFragment newInstance(byte[] bytes, Uri dataUri, String serverQuery,
+                                                     Preferences.CloudSearchPrefs cloudSearchPrefs) {
+        return newInstance(bytes, dataUri, serverQuery, false, cloudSearchPrefs);
+    }
+
+    /**
+     * Visually consists of a list of keyrings with checkboxes to specify which are to be imported
+     * Will immediately load data if non-null bytes/dataUri/serverQuery is supplied
+     *
+     * @param bytes            byte data containing list of keyrings to be imported
+     * @param dataUri          file from which keyrings are to be imported
+     * @param serverQuery      query to search for on keyserver
+     * @param nonInteractive   if true, users will not be able to check/uncheck items in the list
+     * @param cloudSearchPrefs search parameters to use. If null will retrieve from user's
+     *                         preferences.
+     * @return fragment with arguments set based on passed parameters
+     */
+    public static ImportKeysListFragment newInstance(byte[] bytes,
+                                                     Uri dataUri,
+                                                     String serverQuery,
+                                                     boolean nonInteractive,
+                                                     Preferences.CloudSearchPrefs cloudSearchPrefs) {
         ImportKeysListFragment frag = new ImportKeysListFragment();
 
         Bundle args = new Bundle();
         args.putByteArray(ARG_BYTES, bytes);
         args.putParcelable(ARG_DATA_URI, dataUri);
         args.putString(ARG_SERVER_QUERY, serverQuery);
+        args.putBoolean(ARG_NON_INTERACTIVE, nonInteractive);
+        args.putParcelable(ARG_CLOUD_SEARCH_PREFS, cloudSearchPrefs);
 
         frag.setArguments(args);
 
         return frag;
+    }
+
+    static public class LoaderState {
+    }
+
+    static public class BytesLoaderState extends LoaderState {
+        public byte[] mKeyBytes;
+        public Uri mDataUri;
+
+        BytesLoaderState(byte[] keyBytes, Uri dataUri) {
+            mKeyBytes = keyBytes;
+            mDataUri = dataUri;
+        }
+    }
+
+    static public class CloudLoaderState extends LoaderState {
+        Preferences.CloudSearchPrefs mCloudPrefs;
+        String mServerQuery;
+
+        CloudLoaderState(String serverQuery, Preferences.CloudSearchPrefs cloudPrefs) {
+            mServerQuery = serverQuery;
+            mCloudPrefs = cloudPrefs;
+        }
     }
 
     /**
@@ -139,48 +222,103 @@ public class ImportKeysListFragment extends ListFragment implements
         mAdapter = new ImportKeysAdapter(mActivity);
         setListAdapter(mAdapter);
 
-        mDataUri = getArguments().getParcelable(ARG_DATA_URI);
-        mKeyBytes = getArguments().getByteArray(ARG_BYTES);
-        mServerQuery = getArguments().getString(ARG_SERVER_QUERY);
+        Bundle args = getArguments();
+        Uri dataUri = args.getParcelable(ARG_DATA_URI);
+        byte[] bytes = args.getByteArray(ARG_BYTES);
+        String query = args.getString(ARG_SERVER_QUERY);
+        mNonInteractive = args.getBoolean(ARG_NON_INTERACTIVE, false);
 
-        // TODO: this is used when scanning QR Code. Currently it simply uses keyserver nr 0
-        mKeyServer = Preferences.getPreferences(getActivity())
-                .getKeyServers()[0];
+        getListView().setOnTouchListener(new OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                if (!mAdapter.isEmpty()) {
+                    mActivity.onTouchEvent(event);
+                }
+                return false;
+            }
+        });
 
-        if (mDataUri != null || mKeyBytes != null) {
-            // Start out with a progress indicator.
-            setListShown(false);
+        getListView().setFastScrollEnabled(true);
 
-            // Prepare the loader. Either re-connect with an existing one,
-            // or start a new one.
-            // give arguments to onCreateLoader()
-            getLoaderManager().initLoader(LOADER_ID_BYTES, null, this);
+        if (dataUri != null || bytes != null) {
+            mLoaderState = new BytesLoaderState(bytes, dataUri);
+        } else if (query != null) {
+            Preferences.CloudSearchPrefs cloudSearchPrefs
+                    = args.getParcelable(ARG_CLOUD_SEARCH_PREFS);
+            if (cloudSearchPrefs == null) {
+                cloudSearchPrefs = Preferences.getPreferences(getActivity()).getCloudSearchPrefs();
+            }
+
+            mLoaderState = new CloudLoaderState(query, cloudSearchPrefs);
         }
 
-        if (mServerQuery != null && mKeyServer != null) {
-            // Start out with a progress indicator.
-            setListShown(false);
-
-            // Prepare the loader. Either re-connect with an existing one,
-            // or start a new one.
-            // give arguments to onCreateLoader()
-            getLoaderManager().initLoader(LOADER_ID_SERVER_QUERY, null, this);
+        if (dataUri != null && ! checkAndRequestReadPermission(dataUri)) {
+            return;
         }
 
-        if (mKeybaseQuery != null) {
-            // Start out with a progress indicator.
-            setListShown(false);
+        restartLoaders();
+    }
 
-            // Prepare the loader. Either re-connect with an existing one,
-            // or start a new one.
-            // give arguments to onCreateLoader()
-            getLoaderManager().initLoader(LOADER_ID_KEYBASE, null, this);
+    /**
+     * Request READ_EXTERNAL_STORAGE permission on Android >= 6.0 to read content from "file" Uris.
+     *
+     * This method returns true on Android < 6, or if permission is already granted. It
+     * requests the permission and returns false otherwise.
+     *
+     * see https://commonsware.com/blog/2015/10/07/runtime-permissions-files-action-send.html
+     */
+    private boolean checkAndRequestReadPermission(final Uri uri) {
+        if ( ! ContentResolver.SCHEME_FILE.equals(uri.getScheme())) {
+            return true;
+        }
+
+        // Additional check due to https://commonsware.com/blog/2015/11/09/you-cannot-hold-nonexistent-permissions.html
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true;
+        }
+
+        if (ContextCompat.checkSelfPermission(getActivity(), Manifest.permission.READ_EXTERNAL_STORAGE)
+                == PackageManager.PERMISSION_GRANTED) {
+            return true;
+        }
+
+        requestPermissions(
+                new String[]{Manifest.permission.READ_EXTERNAL_STORAGE},
+                REQUEST_PERMISSION_READ_EXTERNAL_STORAGE);
+
+        return false;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode,
+                                           @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
+
+        if (requestCode != REQUEST_PERMISSION_READ_EXTERNAL_STORAGE) {
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+            return;
+        }
+
+        boolean permissionWasGranted = grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+
+        if (permissionWasGranted) {
+            // permission granted -> load key
+            restartLoaders();
+        } else {
+            Toast.makeText(getActivity(), R.string.error_denied_storage_permission, Toast.LENGTH_LONG).show();
+            getActivity().setResult(Activity.RESULT_CANCELED);
+            getActivity().finish();
         }
     }
 
     @Override
     public void onListItemClick(ListView l, View v, int position, long id) {
         super.onListItemClick(l, v, position, id);
+
+        if (mNonInteractive) {
+            return;
+        }
 
         // Select checkbox!
         // Update underlying data and notify adapter of change. The adapter will
@@ -191,32 +329,43 @@ public class ImportKeysListFragment extends ListFragment implements
         mAdapter.notifyDataSetChanged();
     }
 
-    public void loadNew(byte[] keyBytes, Uri dataUri, String serverQuery, String keyServer, String keybaseQuery) {
-        mKeyBytes = keyBytes;
-        mDataUri = dataUri;
-        mServerQuery = serverQuery;
-        mKeyServer = keyServer;
-        mKeybaseQuery = keybaseQuery;
+    public void loadNew(LoaderState loaderState) {
+        mLoaderState = loaderState;
 
-        if (mKeyBytes != null || mDataUri != null) {
+        if (mLoaderState instanceof BytesLoaderState) {
+            BytesLoaderState ls = (BytesLoaderState) mLoaderState;
+
+            if ( ls.mDataUri != null && ! checkAndRequestReadPermission(ls.mDataUri)) {
+                return;
+            }
+        }
+
+        restartLoaders();
+    }
+
+    public void destroyLoader() {
+        if (getLoaderManager().getLoader(LOADER_ID_BYTES) != null) {
+            getLoaderManager().destroyLoader(LOADER_ID_BYTES);
+        }
+        if (getLoaderManager().getLoader(LOADER_ID_CLOUD) != null) {
+            getLoaderManager().destroyLoader(LOADER_ID_CLOUD);
+        }
+        if (getView() != null) {
+            setListShown(true);
+        }
+    }
+
+    private void restartLoaders() {
+        if (mLoaderState instanceof BytesLoaderState) {
             // Start out with a progress indicator.
             setListShown(false);
 
             getLoaderManager().restartLoader(LOADER_ID_BYTES, null, this);
-        }
-
-        if (mServerQuery != null && mKeyServer != null) {
+        } else if (mLoaderState instanceof CloudLoaderState) {
             // Start out with a progress indicator.
             setListShown(false);
 
-            getLoaderManager().restartLoader(LOADER_ID_SERVER_QUERY, null, this);
-        }
-
-        if (mKeybaseQuery != null) {
-            // Start out with a progress indicator.
-            setListShown(false);
-
-            getLoaderManager().restartLoader(LOADER_ID_KEYBASE, null, this);
+            getLoaderManager().restartLoader(LOADER_ID_CLOUD, null, this);
         }
     }
 
@@ -225,14 +374,12 @@ public class ImportKeysListFragment extends ListFragment implements
     onCreateLoader(int id, Bundle args) {
         switch (id) {
             case LOADER_ID_BYTES: {
-                InputData inputData = getInputData(mKeyBytes, mDataUri);
-                return new ImportKeysListLoader(mActivity, inputData);
+                return new ImportKeysListLoader(mActivity, (BytesLoaderState) mLoaderState);
             }
-            case LOADER_ID_SERVER_QUERY: {
-                return new ImportKeysListServerLoader(getActivity(), mServerQuery, mKeyServer);
-            }
-            case LOADER_ID_KEYBASE: {
-                return new ImportKeysListKeybaseLoader(getActivity(), mKeybaseQuery);
+            case LOADER_ID_CLOUD: {
+                CloudLoaderState ls = (CloudLoaderState) mLoaderState;
+                return new ImportKeysListCloudLoader(getActivity(), ls.mServerQuery, ls.mCloudPrefs,
+                        mParcelableProxy);
             }
 
             default:
@@ -261,54 +408,73 @@ public class ImportKeysListFragment extends ListFragment implements
             setListShownNoAnimation(true);
         }
 
-        Exception error = data.getError();
-
         // free old cached key data
         mCachedKeyData = null;
 
+        GetKeyResult getKeyResult = (GetKeyResult) data.getOperationResult();
         switch (loader.getId()) {
             case LOADER_ID_BYTES:
 
-                if (error == null) {
+                if (getKeyResult.success()) {
                     // No error
                     mCachedKeyData = ((ImportKeysListLoader) loader).getParcelableRings();
-                } else if (error instanceof ImportKeysListLoader.FileHasNoContent) {
-                    AppMsg.makeText(getActivity(), R.string.error_import_file_no_content,
-                            AppMsg.STYLE_ALERT).show();
-                } else if (error instanceof ImportKeysListLoader.NonPgpPart) {
-                    AppMsg.makeText(getActivity(),
-                            ((ImportKeysListLoader.NonPgpPart) error).getCount() + " " + getResources().
-                                    getQuantityString(R.plurals.error_import_non_pgp_part,
-                                            ((ImportKeysListLoader.NonPgpPart) error).getCount()),
-                            new AppMsg.Style(AppMsg.LENGTH_LONG, R.color.confirm)).show();
                 } else {
-                    AppMsg.makeText(getActivity(), R.string.error_generic_report_bug,
-                            new AppMsg.Style(AppMsg.LENGTH_LONG, R.color.alert)).show();
+                    getKeyResult.createNotify(getActivity()).show();
                 }
                 break;
 
-            case LOADER_ID_SERVER_QUERY:
-            case LOADER_ID_KEYBASE:
+            case LOADER_ID_CLOUD:
 
-                // TODO: possibly fine-tune message building for these two cases
-                if (error == null) {
-                    AppMsg.makeText(
-                            getActivity(), getResources().getQuantityString(R.plurals.keys_found,
-                                    mAdapter.getCount(), mAdapter.getCount()),
-                            AppMsg.STYLE_INFO
-                    ).show();
-                } else if (error instanceof Keyserver.QueryTooShortException) {
-                    AppMsg.makeText(getActivity(), R.string.error_keyserver_insufficient_query,
-                            AppMsg.STYLE_ALERT).show();
-                } else if (error instanceof Keyserver.TooManyResponsesException) {
-                    AppMsg.makeText(getActivity(), R.string.error_keyserver_too_many_responses,
-                            AppMsg.STYLE_ALERT).show();
-                } else if (error instanceof Keyserver.QueryFailedException) {
-                    Log.d(Constants.TAG,
-                            "Unrecoverable keyserver query error: " + error.getLocalizedMessage());
-                    String alert = getActivity().getString(R.string.error_searching_keys);
-                    alert = alert + " (" + error.getLocalizedMessage() + ")";
-                    AppMsg.makeText(getActivity(), alert, AppMsg.STYLE_ALERT).show();
+                if (getKeyResult.success()) {
+                    // No error
+                } else if (getKeyResult.isPending()) {
+                    if (getKeyResult.getRequiredInputParcel().mType ==
+                            RequiredInputParcel.RequiredInputType.ENABLE_ORBOT) {
+                        if (mShowingOrbotDialog) {
+                            // to prevent dialogs stacking
+                            return;
+                        }
+
+                        // this is because we can't commit fragment dialogs in onLoadFinished
+                        Runnable showOrbotDialog = new Runnable() {
+                            @Override
+                            public void run() {
+                                OrbotHelper.DialogActions dialogActions =
+                                        new OrbotHelper.DialogActions() {
+                                            @Override
+                                            public void onOrbotStarted() {
+                                                mShowingOrbotDialog = false;
+                                                restartLoaders();
+                                            }
+
+                                            @Override
+                                            public void onNeutralButton() {
+                                                mParcelableProxy = ParcelableProxy
+                                                        .getForNoProxy();
+                                                mShowingOrbotDialog = false;
+                                                restartLoaders();
+                                            }
+
+                                            @Override
+                                            public void onCancel() {
+                                                mShowingOrbotDialog = false;
+                                            }
+                                        };
+
+                                if (OrbotHelper.putOrbotInRequiredState(dialogActions,
+                                        getActivity())) {
+                                    // looks like we didn't have to show the
+                                    // dialog after all
+                                    mShowingOrbotDialog = false;
+                                    restartLoaders();
+                                }
+                            }
+                        };
+                        new Handler().post(showOrbotDialog);
+                        mShowingOrbotDialog = true;
+                    }
+                } else {
+                    getKeyResult.createNotify(getActivity()).show();
                 }
                 break;
 
@@ -324,37 +490,13 @@ public class ImportKeysListFragment extends ListFragment implements
                 // Clear the data in the adapter.
                 mAdapter.clear();
                 break;
-            case LOADER_ID_SERVER_QUERY:
-                // Clear the data in the adapter.
-                mAdapter.clear();
-                break;
-            case LOADER_ID_KEYBASE:
+            case LOADER_ID_CLOUD:
                 // Clear the data in the adapter.
                 mAdapter.clear();
                 break;
             default:
                 break;
         }
-    }
-
-    private InputData getInputData(byte[] importBytes, Uri dataUri) {
-        InputData inputData = null;
-        if (importBytes != null) {
-            inputData = new InputData(new ByteArrayInputStream(importBytes), importBytes.length);
-        } else if (dataUri != null) {
-            try {
-                InputStream inputStream = getActivity().getContentResolver().openInputStream(dataUri);
-                int length = inputStream.available();
-
-                inputData = new InputData(inputStream, length);
-            } catch (FileNotFoundException e) {
-                Log.e(Constants.TAG, "FileNotFoundException!", e);
-            } catch (IOException e) {
-                Log.e(Constants.TAG, "IOException!", e);
-            }
-        }
-
-        return inputData;
     }
 
 }

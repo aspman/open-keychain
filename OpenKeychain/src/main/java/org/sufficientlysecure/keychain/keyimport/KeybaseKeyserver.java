@@ -17,54 +17,50 @@
 
 package org.sufficientlysecure.keychain.keyimport;
 
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
-import org.sufficientlysecure.keychain.Constants;
-import org.sufficientlysecure.keychain.pgp.PgpKeyHelper;
-import org.sufficientlysecure.keychain.util.JWalk;
-import org.sufficientlysecure.keychain.util.Log;
+import com.textuality.keybase.lib.KeybaseException;
+import com.textuality.keybase.lib.Match;
+import com.textuality.keybase.lib.KeybaseQuery;
+import com.textuality.keybase.lib.User;
 
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.net.URLEncoder;
+import org.sufficientlysecure.keychain.Constants;
+import org.sufficientlysecure.keychain.ui.util.KeyFormattingUtils;
+import org.sufficientlysecure.keychain.util.Log;
+import org.sufficientlysecure.keychain.util.OkHttpKeybaseClient;
+
+import java.net.Proxy;
 import java.util.ArrayList;
+import java.util.List;
 
 public class KeybaseKeyserver extends Keyserver {
     public static final String ORIGIN = "keybase:keybase.io";
-    private String mQuery;
+
+    Proxy mProxy;
+
+    public KeybaseKeyserver(Proxy proxy) {
+        mProxy = proxy;
+    }
 
     @Override
     public ArrayList<ImportKeysListEntry> search(String query) throws QueryFailedException,
             QueryNeedsRepairException {
-        ArrayList<ImportKeysListEntry> results = new ArrayList<ImportKeysListEntry>();
+        ArrayList<ImportKeysListEntry> results = new ArrayList<>();
 
         if (query.startsWith("0x")) {
             // cut off "0x" if a user is searching for a key id
             query = query.substring(2);
         }
+        if (query.isEmpty()) {
+            throw new QueryTooShortException();
+        }
 
-        JSONObject fromQuery = getFromKeybase("_/api/1.0/user/autocomplete.json?q=", query);
         try {
-
-            JSONArray matches = JWalk.getArray(fromQuery, "completions");
-            for (int i = 0; i < matches.length(); i++) {
-                JSONObject match = matches.getJSONObject(i);
-
-                // only list them if they have a key
-                if (JWalk.optObject(match, "components", "key_fingerprint") != null) {
-                    String keybaseId = JWalk.getString(match, "components", "username", "val");
-                    String fingerprint = JWalk.getString(match, "components", "key_fingerprint", "val");
-                    fingerprint = fingerprint.replace(" ", "").toUpperCase();
-
-                    if (keybaseId.equals(query) || fingerprint.startsWith(query.toUpperCase())) {
-                        results.add(makeEntry(match));
-                    } else {
-                        results.add(makeEntry(match));
-                    }
-                }
+            KeybaseQuery keybaseQuery = new KeybaseQuery(new OkHttpKeybaseClient());
+            keybaseQuery.setProxy(mProxy);
+            Iterable<Match> matches = keybaseQuery.search(query);
+            for (Match match : matches) {
+                results.add(makeEntry(match, query));
             }
-        } catch (Exception e) {
+        } catch (KeybaseException e) {
             Log.e(Constants.TAG, "keybase result parsing error", e);
             throw new QueryFailedException("Unexpected structure in keybase search result: " + e.getMessage());
         }
@@ -72,103 +68,51 @@ public class KeybaseKeyserver extends Keyserver {
         return results;
     }
 
-    private JSONObject getUser(String keybaseId) throws QueryFailedException {
-        try {
-            return getFromKeybase("_/api/1.0/user/lookup.json?username=", keybaseId);
-        } catch (Exception e) {
-            String detail = "";
-            if (keybaseId != null) {
-                detail = ". Query was for user '" + keybaseId + "'";
-            }
-            throw new QueryFailedException(e.getMessage() + detail);
-        }
-    }
-
-    private ImportKeysListEntry makeEntry(JSONObject match) throws QueryFailedException, JSONException {
-
+    private ImportKeysListEntry makeEntry(Match match, String query) throws KeybaseException {
         final ImportKeysListEntry entry = new ImportKeysListEntry();
-        entry.setQuery(mQuery);
-        entry.setOrigin(ORIGIN);
+        entry.setQuery(query);
+        entry.addOrigin(ORIGIN);
 
-        String keybaseId = JWalk.getString(match, "components", "username", "val");
-        String fullName = JWalk.getString(match, "components", "full_name", "val");
-        String fingerprint = JWalk.getString(match, "components", "key_fingerprint", "val");
-        fingerprint = fingerprint.replace(" ", "").toUpperCase(); // not strictly necessary but doesn't hurt
+        entry.setRevoked(false); // keybase doesn’t say anything about revoked keys
+
+        String username = match.getUsername();
+        String fullName = match.getFullName();
+        String fingerprint = match.getFingerprint();
         entry.setFingerprintHex(fingerprint);
 
-        entry.setKeyIdHex("0x" + fingerprint.substring(Math.max(0, fingerprint.length() - 16)));
-        // store extra info, so we can query for the keybase id directly
-        entry.setExtraData(keybaseId);
+        entry.setKeyIdHex("0x" + match.getKeyID());
+        // so we can query for the keybase id directly, and to identify the location from which the
+        // key is to be retrieved
+        entry.setKeybaseName(username);
 
-        final int algorithmId = JWalk.getInt(match, "components", "key_fingerprint", "algo");
-        entry.setAlgorithm(PgpKeyHelper.getAlgorithmInfo(algorithmId));
-        final int bitStrength = JWalk.getInt(match, "components", "key_fingerprint", "nbits");
+        final int bitStrength = match.getBitStrength();
         entry.setBitStrength(bitStrength);
+        final int algorithmId = match.getAlgorithmId();
+        entry.setAlgorithm(KeyFormattingUtils.getAlgorithmInfo(algorithmId, bitStrength, null));
 
-        ArrayList<String> userIds = new ArrayList<String>();
-        String name = fullName + " <keybase.io/" + keybaseId + ">";
+        ArrayList<String> userIds = new ArrayList<>();
+        String name = "<keybase.io/" + username + ">";
+        if (fullName != null) {
+            name = fullName + " " + name;
+        }
         userIds.add(name);
-        try {
-            userIds.add("github.com/" + JWalk.getString(match, "components", "github", "val"));
-        } catch (JSONException e) {
-            // ignore
-        }
-        try {
-            userIds.add("twitter.com/" + JWalk.getString(match, "components", "twitter", "val"));
-        } catch (JSONException e) {
-            // ignore
-        }
-        try {
-            JSONArray array = JWalk.getArray(match, "components", "websites");
-            JSONObject website = array.getJSONObject(0);
-            userIds.add(JWalk.getString(website, "val"));
-        } catch (JSONException e) {
-            // ignore
+
+        List<String> proofLabels = match.getProofLabels();
+        for (String proofLabel : proofLabels) {
+            userIds.add(proofLabel);
         }
         entry.setUserIds(userIds);
         entry.setPrimaryUserId(name);
         return entry;
     }
 
-    private JSONObject getFromKeybase(String path, String query) throws QueryFailedException {
-        try {
-            String url = "https://keybase.io/" + path + URLEncoder.encode(query, "utf8");
-            Log.d(Constants.TAG, "keybase query: " + url);
-
-            URL realUrl = new URL(url);
-            HttpURLConnection conn = (HttpURLConnection) realUrl.openConnection();
-            conn.setConnectTimeout(5000); // TODO: Reasonable values for keybase
-            conn.setReadTimeout(25000);
-            conn.connect();
-            int response = conn.getResponseCode();
-            if (response >= 200 && response < 300) {
-                String text = readAll(conn.getInputStream(), conn.getContentEncoding());
-                try {
-                    JSONObject json = new JSONObject(text);
-                    if (JWalk.getInt(json, "status", "code") != 0) {
-                        throw new QueryFailedException("Keybase.io query failed: " + path + "?" +
-                                query);
-                    }
-                    return json;
-                } catch (JSONException e) {
-                    throw new QueryFailedException("Keybase.io query returned broken JSON");
-                }
-            } else {
-                String message = readAll(conn.getErrorStream(), conn.getContentEncoding());
-                throw new QueryFailedException("Keybase.io query error (status=" + response +
-                        "): " + message);
-            }
-        } catch (Exception e) {
-            throw new QueryFailedException("Keybase.io query error");
-        }
-    }
-
     @Override
     public String get(String id) throws QueryFailedException {
         try {
-            JSONObject user = getUser(id);
-            return JWalk.getString(user, "them", "public_keys", "primary", "bundle");
-        } catch (Exception e) {
+            KeybaseQuery keybaseQuery = new KeybaseQuery(new OkHttpKeybaseClient());
+            keybaseQuery.setProxy(mProxy);
+            return User.keyForUsername(keybaseQuery, id);
+        } catch (KeybaseException e) {
             throw new QueryFailedException(e.getMessage());
         }
     }

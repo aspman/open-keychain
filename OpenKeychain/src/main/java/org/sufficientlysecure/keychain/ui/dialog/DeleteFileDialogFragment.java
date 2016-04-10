@@ -18,31 +18,50 @@
 package org.sufficientlysecure.keychain.ui.dialog;
 
 import android.app.Dialog;
-import android.app.ProgressDialog;
 import android.content.DialogInterface;
-import android.content.Intent;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
-import android.os.Message;
-import android.os.Messenger;
+import android.provider.DocumentsContract;
 import android.support.v4.app.DialogFragment;
 import android.support.v4.app.FragmentActivity;
 import android.widget.Toast;
 
+import org.sufficientlysecure.keychain.Constants;
 import org.sufficientlysecure.keychain.R;
-import org.sufficientlysecure.keychain.service.KeychainIntentService;
-import org.sufficientlysecure.keychain.service.KeychainIntentServiceHandler;
+import org.sufficientlysecure.keychain.util.FileHelper;
+import org.sufficientlysecure.keychain.util.Log;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.HashMap;
 
 public class DeleteFileDialogFragment extends DialogFragment {
-    private static final String ARG_DELETE_FILE = "delete_file";
+    private static final String ARG_DELETE_URIS = "delete_uris";
+
+    private OnDeletedListener onDeletedListener;
 
     /**
      * Creates new instance of this delete file dialog fragment
      */
-    public static DeleteFileDialogFragment newInstance(String deleteFile) {
+    public static DeleteFileDialogFragment newInstance(ArrayList<Uri> deleteUris) {
         DeleteFileDialogFragment frag = new DeleteFileDialogFragment();
         Bundle args = new Bundle();
 
-        args.putString(ARG_DELETE_FILE, deleteFile);
+        args.putParcelableArrayList(ARG_DELETE_URIS, deleteUris);
+
+        frag.setArguments(args);
+
+        return frag;
+    }
+
+    public static DeleteFileDialogFragment newInstance(Uri deleteUri) {
+        DeleteFileDialogFragment frag = new DeleteFileDialogFragment();
+        Bundle args = new Bundle();
+
+        ArrayList<Uri> list = new ArrayList<>();
+        list.add(deleteUri);
+        args.putParcelableArrayList(ARG_DELETE_URIS, list);
 
         frag.setArguments(args);
 
@@ -56,60 +75,77 @@ public class DeleteFileDialogFragment extends DialogFragment {
     public Dialog onCreateDialog(Bundle savedInstanceState) {
         final FragmentActivity activity = getActivity();
 
-        final String deleteFile = getArguments().getString(ARG_DELETE_FILE);
+        final ArrayList<Uri> deleteUris = getArguments().getParcelableArrayList(ARG_DELETE_URIS);
+
+        final StringBuilder deleteFileNames = new StringBuilder();
+        //Retrieving file names after deletion gives unexpected results
+        final HashMap<Uri, String> deleteFileNameMap = new HashMap<>();
+        for (Uri deleteUri : deleteUris) {
+            String deleteFileName = FileHelper.getFilename(getActivity(), deleteUri);
+            deleteFileNames.append('\n').append(deleteFileName);
+            deleteFileNameMap.put(deleteUri, deleteFileName);
+        }
 
         CustomAlertDialogBuilder alert = new CustomAlertDialogBuilder(activity);
 
+        alert.setTitle(getString(R.string.file_delete_confirmation_title));
+        alert.setMessage(getString(R.string.file_delete_confirmation, deleteFileNames.toString()));
 
-        alert.setIcon(R.drawable.ic_dialog_alert_holo_light);
-        alert.setTitle(R.string.warning);
-        alert.setMessage(this.getString(R.string.file_delete_confirmation, deleteFile));
-
-        alert.setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
+        alert.setPositiveButton(R.string.btn_delete, new DialogInterface.OnClickListener() {
 
             @Override
             public void onClick(DialogInterface dialog, int id) {
                 dismiss();
 
-                // Send all information needed to service to edit key in other thread
-                Intent intent = new Intent(activity, KeychainIntentService.class);
+                ArrayList<String> failedFileNameList = new ArrayList<>();
 
-                // fill values for this action
-                Bundle data = new Bundle();
-
-                intent.setAction(KeychainIntentService.ACTION_DELETE_FILE_SECURELY);
-                data.putString(KeychainIntentService.DELETE_FILE, deleteFile);
-                intent.putExtra(KeychainIntentService.EXTRA_DATA, data);
-
-                ProgressDialogFragment deletingDialog = ProgressDialogFragment.newInstance(
-                        getString(R.string.progress_deleting_securely),
-                        ProgressDialog.STYLE_HORIZONTAL,
-                        false,
-                        null);
-
-                // Message is received after deleting is done in KeychainIntentService
-                KeychainIntentServiceHandler saveHandler =
-                        new KeychainIntentServiceHandler(activity, deletingDialog) {
-                    public void handleMessage(Message message) {
-                        // handle messages by standard KeychainIntentHandler first
-                        super.handleMessage(message);
-
-                        if (message.arg1 == KeychainIntentServiceHandler.MESSAGE_OKAY) {
-                            Toast.makeText(activity, R.string.file_delete_successful,
-                                    Toast.LENGTH_SHORT).show();
+                for (Uri deleteUri : deleteUris) {
+                    // Use DocumentsContract on Android >= 4.4
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                        try {
+                            if (DocumentsContract.deleteDocument(getActivity().getContentResolver(), deleteUri)) {
+                                continue;
+                            }
+                        } catch (Exception e) {
+                            Log.d(Constants.TAG, "Catched Exception, can happen when delete is not supported!", e);
                         }
                     }
-                };
 
-                // Create a new Messenger for the communication back
-                Messenger messenger = new Messenger(saveHandler);
-                intent.putExtra(KeychainIntentService.EXTRA_MESSENGER, messenger);
+                    try {
+                        if (getActivity().getContentResolver().delete(deleteUri, null, null) > 0) {
+                            continue;
+                        }
+                    } catch (Exception e) {
+                        Log.d(Constants.TAG, "Catched Exception, can happen when delete is not supported!", e);
+                    }
 
-                // show progress dialog
-                deletingDialog.show(activity.getSupportFragmentManager(), "deletingDialog");
+                    // some Uri's a ContentResolver fails to delete is handled by the java.io.File's delete
+                    // via the path of the Uri
+                    if (new File(deleteUri.getPath()).delete()) {
+                        continue;
+                    }
 
-                // start service with intent
-                activity.startService(intent);
+                    // Note: We can't delete every file...
+                    failedFileNameList.add(deleteFileNameMap.get(deleteUri));
+                }
+
+                StringBuilder failedFileNames = new StringBuilder();
+                if (!failedFileNameList.isEmpty()) {
+                    for (String failedFileName : failedFileNameList) {
+                        failedFileNames.append('\n').append(failedFileName);
+                    }
+                    failedFileNames.append('\n').append(getActivity().getString(R.string.error_file_delete_failed));
+                }
+
+                // NOTE: Use Toasts, not Snackbars. When sharing to another application snackbars
+                // would not show up!
+                Toast.makeText(getActivity(), getActivity().getString(R.string.file_delete_successful,
+                                deleteUris.size() - failedFileNameList.size(), deleteUris.size(), failedFileNames.toString()),
+                        Toast.LENGTH_LONG).show();
+
+                if (onDeletedListener != null) {
+                    onDeletedListener.onDeleted();
+                }
             }
         });
         alert.setNegativeButton(android.R.string.cancel, new DialogInterface.OnClickListener() {
@@ -121,4 +157,18 @@ public class DeleteFileDialogFragment extends DialogFragment {
 
         return alert.show();
     }
+
+    public void setOnDeletedListener(OnDeletedListener onDeletedListener) {
+        this.onDeletedListener = onDeletedListener;
+    }
+
+    /**
+     * Callback for performing tasks after the deletion of files
+     */
+    public interface OnDeletedListener {
+
+        public void onDeleted();
+
+    }
+
 }

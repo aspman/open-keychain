@@ -17,7 +17,12 @@
 
 package org.sufficientlysecure.keychain.util;
 
+import android.os.Bundle;
+
 import org.sufficientlysecure.keychain.Constants;
+
+import java.util.Iterator;
+import java.util.Set;
 
 /**
  * Wraps Android Logging to enable or disable debug output using Constants
@@ -45,6 +50,18 @@ public final class Log {
     public static void d(String tag, String msg, Throwable tr) {
         if (Constants.DEBUG) {
             android.util.Log.d(tag, msg, tr);
+        }
+    }
+
+    public static void dEscaped(String tag, String msg) {
+        if (Constants.DEBUG) {
+            android.util.Log.d(tag, removeUnicodeAndEscapeChars(msg));
+        }
+    }
+
+    public static void dEscaped(String tag, String msg, Throwable tr) {
+        if (Constants.DEBUG) {
+            android.util.Log.d(tag, removeUnicodeAndEscapeChars(msg), tr);
         }
     }
 
@@ -80,4 +97,65 @@ public final class Log {
         android.util.Log.e(tag, msg, tr);
     }
 
+
+    /**
+     * Logs bundle content to debug for inspecting the content
+     *
+     * @param bundle
+     * @param bundleName
+     */
+    public static void logDebugBundle(Bundle bundle, String bundleName) {
+        if (Constants.DEBUG) {
+            if (bundle != null) {
+                Set<String> ks = bundle.keySet();
+                Iterator<String> iterator = ks.iterator();
+
+                Log.d(Constants.TAG, "Bundle " + bundleName + ":");
+                Log.d(Constants.TAG, "------------------------------");
+                while (iterator.hasNext()) {
+                    String key = iterator.next();
+                    Object value = bundle.get(key);
+
+                    if (value != null) {
+                        Log.d(Constants.TAG, key + " : " + value.toString());
+                    } else {
+                        Log.d(Constants.TAG, key + " : null");
+                    }
+                }
+                Log.d(Constants.TAG, "------------------------------");
+            } else {
+                Log.d(Constants.TAG, "Bundle " + bundleName + ": null");
+            }
+        }
+    }
+
+    public static String removeUnicodeAndEscapeChars(String input) {
+        StringBuilder buffer = new StringBuilder(input.length());
+        for (int i = 0; i < input.length(); i++) {
+            if ((int) input.charAt(i) > 256) {
+                buffer.append("\\u").append(Integer.toHexString((int) input.charAt(i)));
+            } else {
+                if (input.charAt(i) == '\n') {
+                    buffer.append("\\n");
+                } else if (input.charAt(i) == '\t') {
+                    buffer.append("\\t");
+                } else if (input.charAt(i) == '\r') {
+                    buffer.append("\\r");
+                } else if (input.charAt(i) == '\b') {
+                    buffer.append("\\b");
+                } else if (input.charAt(i) == '\f') {
+                    buffer.append("\\f");
+                } else if (input.charAt(i) == '\'') {
+                    buffer.append("\\'");
+                } else if (input.charAt(i) == '\"') {
+                    buffer.append("\\");
+                } else if (input.charAt(i) == '\\') {
+                    buffer.append("\\\\");
+                } else {
+                    buffer.append(input.charAt(i));
+                }
+            }
+        }
+        return buffer.toString();
+    }
 }

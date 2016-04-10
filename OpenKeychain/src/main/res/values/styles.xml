@@ -1,37 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- Used in Android < 4 -->
+<resources xmlns:tools="http://schemas.android.com/tools">
 
-    <style name="KeychainTheme" parent="@style/Theme.AppCompat.Light">
-        <item name="android:alertDialogStyle">@style/CustomDialogTheme</item>
-    </style>
-
-    <!-- Ugly fix to make content background of Dialogs on Android < 4 white not black! -->
-    <style name="CustomDialogTheme" parent="@android:style/Theme.Dialog">
-        <item name="android:fullDark">@drawable/popup_full_bright</item>
-        <!--<item name="android:topDark">@android:drawable/popup_full_dark</item>-->
-        <item name="android:centerDark">@drawable/popup_center_bright</item>
-        <!--<item name="android:bottomDark">@android:drawable/popup_bottom_dark</item>-->
-        <!--<item name="fullBright">@android:drawable/popup_full_bright</item>-->
-        <!--<item name="topBright">@android:drawable/popup_top_bright</item>-->
-        <!--<item name="centerBright">@android:drawable/popup_center_bright</item>-->
-        <!--<item name="bottomBright">@android:drawable/popup_bottom_bright</item>-->
-        <!--<item name="bottomMedium">@android:drawable/popup_bottom_medium</item>-->
-        <!--<item name="centerMedium">@android:drawable/popup_center_medium</item>-->
+    <style name="CardViewHeader">
+        <item name="android:drawableBottom">?attr/cardViewHeaderDrawable</item>
+        <item name="android:drawablePadding">16dp</item>
+        <item name="android:layout_marginTop">16dp</item>
+        <item name="android:paddingLeft">16dp</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:textColor">?attr/colorHeaderText</item>
+        <item name="android:textSize">17sp</item>
     </style>
 
     <style name="SectionHeader">
-        <item name="android:drawableBottom">@drawable/section_header</item>
+        <item name="android:drawableBottom">?attr/sectionHeaderDrawable</item>
         <item name="android:drawablePadding">4dp</item>
         <item name="android:layout_marginTop">8dp</item>
         <item name="android:paddingLeft">8dp</item>
         <item name="android:textStyle">bold</item>
-        <item name="android:textColor">@color/emphasis</item>
+        <item name="android:textColor">?attr/colorHeaderText</item>
         <item name="android:textSize">14sp</item>
     </style>
 
-    <style name="SelectableItem">
-        <item name="android:background">@drawable/selector_transparent_button</item>
+    <style name="FabMenuStyle">
+        <item name="android:background">?attr/fabLabelBackgroundDrawable</item>
+        <item name="android:textColor">?attr/colorFabText</item>
+    </style>
+
+    <!-- This style is for use with our drag and drop RecyclerView since ItemDecoration did not
+    move with the drag -->
+    <style name="Divider">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">2dp</item>
+        <item name="android:background">?android:attr/listDivider</item>
+    </style>
+
+    <style name="MaterialFlatButton" parent="@style/Widget.AppCompat.Button.Borderless">
+        <item name="android:textColor">?attr/colorAccent</item>
+    </style>
+
+    <!-- constrain size of backup code input for smaller devices -->
+    <style name="BackupCodeTextStyle">
+        <item name="android:textSize" tools:ignore="SpUsage">14dp</item>
     </style>
 
 </resources>

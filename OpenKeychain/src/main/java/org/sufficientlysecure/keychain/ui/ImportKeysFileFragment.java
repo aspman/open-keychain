@@ -19,21 +19,25 @@ package org.sufficientlysecure.keychain.ui;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.support.v4.app.Fragment;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 
-import com.beardedhen.androidbootstrap.BootstrapButton;
-
 import org.sufficientlysecure.keychain.Constants;
 import org.sufficientlysecure.keychain.R;
-import org.sufficientlysecure.keychain.helper.FileHelper;
+import org.sufficientlysecure.keychain.compatibility.ClipboardReflection;
+import org.sufficientlysecure.keychain.pgp.PgpHelper;
+import org.sufficientlysecure.keychain.ui.util.Notify;
+import org.sufficientlysecure.keychain.ui.util.Notify.Style;
+import org.sufficientlysecure.keychain.util.FileHelper;
 
 public class ImportKeysFileFragment extends Fragment {
     private ImportKeysActivity mImportActivity;
-    private BootstrapButton mBrowse;
+    private View mBrowse;
+    private View mClipboardButton;
 
     public static final int REQUEST_CODE_FILE = 0x00007003;
 
@@ -56,15 +60,34 @@ public class ImportKeysFileFragment extends Fragment {
     public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
         View view = inflater.inflate(R.layout.import_keys_file_fragment, container, false);
 
-        mBrowse = (BootstrapButton) view.findViewById(R.id.import_keys_file_browse);
+        mBrowse = view.findViewById(R.id.import_keys_file_browse);
 
         mBrowse.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 // open .asc or .gpg files
-                // setting it to text/plain prevents Cynaogenmod's file manager from selecting asc
+                // setting it to text/plain prevents Cyanogenmod's file manager from selecting asc
                 // or gpg types!
-                FileHelper.openFile(ImportKeysFileFragment.this, Constants.Path.APP_DIR + "/",
-                        "*/*", REQUEST_CODE_FILE);
+                FileHelper.openDocument(ImportKeysFileFragment.this,
+                        Uri.fromFile(Constants.Path.APP_DIR), "*/*", false, REQUEST_CODE_FILE);
+            }
+        });
+
+        mClipboardButton = view.findViewById(R.id.import_clipboard_button);
+        mClipboardButton.setOnClickListener(new View.OnClickListener() {
+
+            @Override
+            public void onClick(View v) {
+                CharSequence clipboardText = ClipboardReflection.getClipboardText(getActivity());
+                String sendText = "";
+                if (clipboardText != null) {
+                    sendText = clipboardText.toString();
+                    sendText = PgpHelper.getPgpKeyContent(sendText);
+                    if (sendText == null) {
+                        Notify.create(mImportActivity, "Bad data!", Style.ERROR).show();
+                        return;
+                    }
+                    mImportActivity.loadCallback(new ImportKeysListFragment.BytesLoaderState(sendText.getBytes(), null));
+                }
             }
         });
 
@@ -72,20 +95,20 @@ public class ImportKeysFileFragment extends Fragment {
     }
 
     @Override
-    public void onActivityCreated(Bundle savedInstanceState) {
-        super.onActivityCreated(savedInstanceState);
+    public void onAttach(Activity activity) {
+        super.onAttach(activity);
 
-        mImportActivity = (ImportKeysActivity) getActivity();
+        mImportActivity = (ImportKeysActivity) activity;
     }
 
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         switch (requestCode) {
             case REQUEST_CODE_FILE: {
-                if (resultCode == Activity.RESULT_OK && data != null) {
+                if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
 
                     // load data
-                    mImportActivity.loadCallback(null, data.getData(), null, null, null);
+                    mImportActivity.loadCallback(new ImportKeysListFragment.BytesLoaderState(null, data.getData()));
                 }
 
                 break;

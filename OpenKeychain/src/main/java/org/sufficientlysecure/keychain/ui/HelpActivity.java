@@ -17,46 +17,57 @@
 
 package org.sufficientlysecure.keychain.ui;
 
+import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
+import android.support.v4.app.Fragment;
 import android.support.v4.view.ViewPager;
-import android.support.v7.app.ActionBar;
-import android.support.v7.app.ActionBarActivity;
+import android.view.View;
 
+import com.astuetz.PagerSlidingTabStrip;
+
+import org.sufficientlysecure.donations.DonationsFragment;
+import org.sufficientlysecure.keychain.BuildConfig;
+import org.sufficientlysecure.keychain.Constants;
 import org.sufficientlysecure.keychain.R;
 import org.sufficientlysecure.keychain.ui.adapter.PagerTabStripAdapter;
-import org.sufficientlysecure.keychain.ui.widget.SlidingTabLayout;
+import org.sufficientlysecure.keychain.ui.base.BaseActivity;
 
-public class HelpActivity extends ActionBarActivity {
+
+public class HelpActivity extends BaseActivity {
     public static final String EXTRA_SELECTED_TAB = "selected_tab";
 
     public static final int TAB_START = 0;
-    public static final int TAB_FAQ = 1;
-    public static final int TAB_WOT = 2;
-    public static final int TAB_NFC = 3;
+    public static final int TAB_CONFIRM = 1;
+    public static final int TAB_FAQ = 2;
+    public static final int TAB_DONATE = 3;
     public static final int TAB_CHANGELOG = 4;
     public static final int TAB_ABOUT = 5;
 
-    ViewPager mViewPager;
+    // Google Play
+    private static final String[] GOOGLE_PLAY_CATALOG = new String[]{"keychain.donation.1",
+            "keychain.donation.2", "keychain.donation.3", "keychain.donation.5", "keychain.donation.10",
+            "keychain.donation.50", "keychain.donation.100"};
+
     private PagerTabStripAdapter mTabsAdapter;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        final ActionBar actionBar = getSupportActionBar();
-        actionBar.setDisplayShowTitleEnabled(true);
-        actionBar.setDisplayHomeAsUpEnabled(false);
-        actionBar.setHomeButtonEnabled(false);
+        mToolbar.setNavigationOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                finish();
+            }
+        });
 
-        setContentView(R.layout.help_activity);
-
-        mViewPager = (ViewPager) findViewById(R.id.pager);
-        SlidingTabLayout slidingTabLayout =
-                (SlidingTabLayout) findViewById(R.id.sliding_tab_layout);
+        ViewPager viewPager = (ViewPager) findViewById(R.id.pager);
+        PagerSlidingTabStrip slidingTabLayout =
+                (PagerSlidingTabStrip) findViewById(R.id.sliding_tab_layout);
 
         mTabsAdapter = new PagerTabStripAdapter(this);
-        mViewPager.setAdapter(mTabsAdapter);
+        viewPager.setAdapter(mTabsAdapter);
 
         int selectedTab = TAB_START;
         Intent intent = getIntent();
@@ -65,37 +76,78 @@ public class HelpActivity extends ActionBarActivity {
         }
 
         Bundle startBundle = new Bundle();
-        startBundle.putInt(HelpHtmlFragment.ARG_HTML_FILE, R.raw.help_start);
-        mTabsAdapter.addTab(HelpHtmlFragment.class, startBundle,
+        startBundle.putInt(HelpMarkdownFragment.ARG_MARKDOWN_RES, R.raw.help_start);
+        mTabsAdapter.addTab(HelpMarkdownFragment.class, startBundle,
                 getString(R.string.help_tab_start));
 
-        Bundle faqBundle = new Bundle();
-        faqBundle.putInt(HelpHtmlFragment.ARG_HTML_FILE, R.raw.help_faq);
-        mTabsAdapter.addTab(HelpHtmlFragment.class, faqBundle,
-                getString(R.string.help_tab_faq));
-
-        Bundle wotBundle = new Bundle();
-        wotBundle.putInt(HelpHtmlFragment.ARG_HTML_FILE, R.raw.help_wot);
-        mTabsAdapter.addTab(HelpHtmlFragment.class, wotBundle,
+        Bundle certificationBundle = new Bundle();
+        certificationBundle.putInt(HelpMarkdownFragment.ARG_MARKDOWN_RES, R.raw.help_certification);
+        mTabsAdapter.addTab(HelpMarkdownFragment.class, certificationBundle,
                 getString(R.string.help_tab_wot));
 
-        Bundle nfcBundle = new Bundle();
-        nfcBundle.putInt(HelpHtmlFragment.ARG_HTML_FILE, R.raw.help_nfc_beam);
-        mTabsAdapter.addTab(HelpHtmlFragment.class, nfcBundle,
-                getString(R.string.help_tab_nfc_beam));
+        Bundle faqBundle = new Bundle();
+        faqBundle.putInt(HelpMarkdownFragment.ARG_MARKDOWN_RES, R.raw.help_faq);
+        mTabsAdapter.addTab(HelpMarkdownFragment.class, faqBundle,
+                getString(R.string.help_tab_faq));
+
+        Bundle donationsBundle = new Bundle();
+        donationsBundle.putBoolean(DonationsFragment.ARG_DEBUG, Constants.DEBUG);
+        if (BuildConfig.DONATIONS_GOOGLE) {
+            donationsBundle.putBoolean(DonationsFragment.ARG_GOOGLE_ENABLED, true);
+            donationsBundle.putString(DonationsFragment.ARG_GOOGLE_PUBKEY, BuildConfig.GOOGLE_PLAY_PUBKEY);
+            donationsBundle.putStringArray(DonationsFragment.ARG_GOOGLE_CATALOG, GOOGLE_PLAY_CATALOG);
+            donationsBundle.putStringArray(DonationsFragment.ARG_GOOGLE_CATALOG_VALUES,
+                    getResources().getStringArray(R.array.help_donation_google_catalog_values));
+        } else {
+            donationsBundle.putBoolean(DonationsFragment.ARG_PAYPAL_ENABLED, true);
+            donationsBundle.putString(DonationsFragment.ARG_PAYPAL_CURRENCY_CODE, BuildConfig.PAYPAL_CURRENCY_CODE);
+            donationsBundle.putString(DonationsFragment.ARG_PAYPAL_USER, BuildConfig.PAYPAL_USER);
+            donationsBundle.putString(DonationsFragment.ARG_PAYPAL_ITEM_NAME,
+                    getString(R.string.help_donation_paypal_item));
+            donationsBundle.putBoolean(DonationsFragment.ARG_BITCOIN_ENABLED, true);
+            donationsBundle.putString(DonationsFragment.ARG_BITCOIN_ADDRESS, BuildConfig.BITCOIN_ADDRESS);
+        }
+        mTabsAdapter.addTab(DonationsFragment.class, donationsBundle,
+                getString(R.string.help_tab_donations));
 
         Bundle changelogBundle = new Bundle();
-        changelogBundle.putInt(HelpHtmlFragment.ARG_HTML_FILE, R.raw.help_changelog);
-        mTabsAdapter.addTab(HelpHtmlFragment.class, changelogBundle,
+        changelogBundle.putInt(HelpMarkdownFragment.ARG_MARKDOWN_RES, R.raw.help_changelog);
+        mTabsAdapter.addTab(HelpMarkdownFragment.class, changelogBundle,
                 getString(R.string.help_tab_changelog));
 
         mTabsAdapter.addTab(HelpAboutFragment.class, null,
                 getString(R.string.help_tab_about));
 
         // NOTE: must be after adding the tabs!
-        slidingTabLayout.setViewPager(mViewPager);
+        slidingTabLayout.setViewPager(viewPager);
 
         // switch to tab selected by extra
-        mViewPager.setCurrentItem(selectedTab);
+        viewPager.setCurrentItem(selectedTab);
     }
+
+    @Override
+    protected void initLayout() {
+        setContentView(R.layout.help_activity);
+    }
+
+    public static void startHelpActivity(Context context, int code) {
+        Intent intent = new Intent(context, HelpActivity.class);
+        intent.putExtra(HelpActivity.EXTRA_SELECTED_TAB, code);
+        context.startActivity(intent);
+    }
+
+    /**
+     * Needed for Google Play In-app Billing. It uses startIntentSenderForResult(). The result is not propagated to
+     * the Fragment like in startActivityForResult(). Thus we need to propagate manually to our Fragment.
+     */
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+
+        Fragment fragment = mTabsAdapter.getRegisteredFragment(TAB_DONATE);
+        if (fragment != null) {
+            fragment.onActivityResult(requestCode, resultCode, data);
+        }
+    }
+
 }

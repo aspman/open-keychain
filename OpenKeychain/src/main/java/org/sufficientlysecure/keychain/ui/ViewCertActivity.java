@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2013-2014 Dominik Schürmann <dominik@dominikschuermann.de>
+ * Copyright (C) 2014 Vincent Breitmoser <v.breitmoser@mugenguild.com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,7 +27,7 @@ import android.support.v4.app.NavUtils;
 import android.support.v4.content.CursorLoader;
 import android.support.v4.content.Loader;
 import android.support.v7.app.ActionBar;
-import android.support.v7.app.ActionBarActivity;
+import android.text.TextUtils;
 import android.text.format.DateFormat;
 import android.view.MenuItem;
 import android.view.View;
@@ -34,18 +35,19 @@ import android.widget.TextView;
 
 import org.sufficientlysecure.keychain.Constants;
 import org.sufficientlysecure.keychain.R;
-import org.sufficientlysecure.keychain.pgp.PgpKeyHelper;
-import org.sufficientlysecure.keychain.pgp.WrappedPublicKeyRing;
 import org.sufficientlysecure.keychain.pgp.WrappedSignature;
 import org.sufficientlysecure.keychain.pgp.exception.PgpGeneralException;
+import org.sufficientlysecure.keychain.pgp.exception.PgpKeyNotFoundException;
 import org.sufficientlysecure.keychain.provider.KeychainContract.Certs;
 import org.sufficientlysecure.keychain.provider.KeychainContract.KeyRings;
 import org.sufficientlysecure.keychain.provider.ProviderHelper;
+import org.sufficientlysecure.keychain.ui.base.BaseActivity;
+import org.sufficientlysecure.keychain.ui.util.KeyFormattingUtils;
 import org.sufficientlysecure.keychain.util.Log;
 
 import java.util.Date;
 
-public class ViewCertActivity extends ActionBarActivity
+public class ViewCertActivity extends BaseActivity
         implements LoaderManager.LoaderCallbacks<Cursor> {
 
     // These are the rows that we will retrieve.
@@ -82,9 +84,6 @@ public class ViewCertActivity extends ActionBarActivity
         ActionBar actionBar = getSupportActionBar();
         actionBar.setDisplayHomeAsUpEnabled(true);
 
-        setContentView(R.layout.view_cert_activity);
-
-        mStatus = (TextView) findViewById(R.id.status);
         mSigneeKey = (TextView) findViewById(R.id.signee_key);
         mSigneeUid = (TextView) findViewById(R.id.signee_uid);
         mAlgorithm = (TextView) findViewById(R.id.algorithm);
@@ -110,6 +109,11 @@ public class ViewCertActivity extends ActionBarActivity
     }
 
     @Override
+    protected void initLayout() {
+        setContentView(R.layout.view_cert_activity);
+    }
+
+    @Override
     public Loader<Cursor> onCreateLoader(int id, Bundle args) {
         // Now create and return a CursorLoader that will take care of
         // creating a Cursor for the data being displayed.
@@ -119,8 +123,7 @@ public class ViewCertActivity extends ActionBarActivity
     @Override
     public void onLoadFinished(Loader<Cursor> loader, Cursor data) {
         if (data.moveToFirst()) {
-            String signeeKey = PgpKeyHelper.convertKeyIdToHex(data.getLong(INDEX_MASTER_KEY_ID));
-            mSigneeKey.setText(signeeKey);
+            mSigneeKey.setText(KeyFormattingUtils.beautifyKeyId(data.getLong(INDEX_MASTER_KEY_ID)));
 
             String signeeUid = data.getString(INDEX_USER_ID);
             mSigneeUid.setText(signeeUid);
@@ -129,8 +132,7 @@ public class ViewCertActivity extends ActionBarActivity
             mCreation.setText(DateFormat.getDateFormat(getApplicationContext()).format(creationDate));
 
             mCertifierKeyId = data.getLong(INDEX_KEY_ID_CERTIFIER);
-            String certifierKey = PgpKeyHelper.convertKeyIdToHex(mCertifierKeyId);
-            mCertifierKey.setText(certifierKey);
+            mCertifierKey.setText(KeyFormattingUtils.beautifyKeyId(mCertifierKeyId));
 
             String certifierUid = data.getString(INDEX_SIGNER_UID);
             if (certifierUid != null) {
@@ -140,33 +142,8 @@ public class ViewCertActivity extends ActionBarActivity
             }
 
             WrappedSignature sig = WrappedSignature.fromBytes(data.getBlob(INDEX_DATA));
-            try {
-                ProviderHelper providerHelper = new ProviderHelper(this);
 
-                WrappedPublicKeyRing signeeRing =
-                        providerHelper.getWrappedPublicKeyRing(data.getLong(INDEX_MASTER_KEY_ID));
-                WrappedPublicKeyRing signerRing =
-                        providerHelper.getWrappedPublicKeyRing(sig.getKeyId());
-
-                try {
-                    sig.init(signerRing.getSubkey());
-                    if (sig.verifySignature(signeeRing.getSubkey(), signeeUid)) {
-                        mStatus.setText(R.string.cert_verify_ok);
-                        mStatus.setTextColor(getResources().getColor(R.color.bbutton_success));
-                    } else {
-                        mStatus.setText(R.string.cert_verify_failed);
-                        mStatus.setTextColor(getResources().getColor(R.color.alert));
-                    }
-                } catch (PgpGeneralException e) {
-                    mStatus.setText(R.string.cert_verify_error);
-                    mStatus.setTextColor(getResources().getColor(R.color.alert));
-                }
-            } catch (ProviderHelper.NotFoundException e) {
-                mStatus.setText(R.string.cert_verify_unavailable);
-                mStatus.setTextColor(getResources().getColor(R.color.black));
-            }
-
-            String algorithmStr = PgpKeyHelper.getAlgorithmInfo(this, sig.getKeyAlgorithm(), 0);
+            String algorithmStr = KeyFormattingUtils.getAlgorithmInfo(this, sig.getKeyAlgorithm(), null, null);
             mAlgorithm.setText(algorithmStr);
 
             mRowReason.setVisibility(View.GONE);
@@ -185,14 +162,16 @@ public class ViewCertActivity extends ActionBarActivity
                     break;
                 case WrappedSignature.CERTIFICATION_REVOCATION: {
                     mType.setText(R.string.cert_revoke);
-                    if (sig.isRevocation()) {
-                        try {
+                    try {
+                        if (! TextUtils.isEmpty(sig.getRevocationReason())) {
                             mReason.setText(sig.getRevocationReason());
-                        } catch(PgpGeneralException e) {
+                        } else {
                             mReason.setText(R.string.none);
                         }
-                        mRowReason.setVisibility(View.VISIBLE);
+                    } catch (PgpGeneralException e) {
+                        mReason.setText(R.string.none);
                     }
+                    mRowReason.setVisibility(View.VISIBLE);
                     break;
                 }
             }
@@ -210,7 +189,7 @@ public class ViewCertActivity extends ActionBarActivity
                             KeyRings.buildUnifiedKeyRingsFindBySubkeyUri(mCertifierKeyId)).getMasterKeyId();
                     viewIntent.setData(KeyRings.buildGenericKeyRingUri(signerMasterKeyId));
                     startActivity(viewIntent);
-                } catch (PgpGeneralException e) {
+                } catch (PgpKeyNotFoundException e) {
                     // TODO notify user of this, maybe offer download?
                     Log.e(Constants.TAG, "key not found!", e);
                 }

@@ -17,26 +17,28 @@
 
 package org.sufficientlysecure.keychain.util;
 
-public class Choice {
+public class Choice <E> {
+
     private String mName;
-    private int mId;
+    private E mId;
+    private String mDescription;
 
-    public Choice() {
-        mId = -1;
-        mName = "";
-    }
-
-    public Choice(int id, String name) {
+    public Choice(E id, String name, String description) {
         mId = id;
         mName = name;
+        mDescription = description;
     }
 
-    public int getId() {
+    public E getId() {
         return mId;
     }
 
     public String getName() {
         return mName;
+    }
+
+    public String getDescription() {
+        return mDescription;
     }
 
     @Override

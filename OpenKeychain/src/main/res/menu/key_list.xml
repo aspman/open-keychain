@@ -5,42 +5,48 @@
     <item
         android:id="@+id/menu_key_list_search"
         android:title="@string/menu_search"
-        android:icon="@drawable/ic_action_search"
+        android:icon="@drawable/ic_search_white_24dp"
         app:actionViewClass="android.support.v7.widget.SearchView"
-        app:showAsAction="collapseActionView|ifRoom" />
-
-    <item
-        android:id="@+id/menu_key_list_import"
-        app:showAsAction="ifRoom|withText"
-        android:icon="@drawable/ic_action_add_person"
-        android:title="@string/menu_add_keys" />
-
-    <item
-        android:id="@+id/menu_key_list_export"
-        app:showAsAction="ifRoom|withText"
-        android:icon="@drawable/ic_action_import_export"
-        android:title="@string/menu_export_all_keys" />
+        app:showAsAction="collapseActionView|always" />
 
     <item
         android:id="@+id/menu_key_list_create"
-        app:showAsAction="never"
-        android:title="@string/menu_create_key" />
+        android:title="@string/menu_manage_keys"
+        app:showAsAction="never" />
 
     <item
-        android:id="@+id/menu_key_list_create_expert"
-        app:showAsAction="never"
-        android:title="@string/menu_create_key_expert" />
+        android:id="@+id/menu_key_list_update_all_keys"
+        android:title="@string/menu_update_all_keys"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/menu_key_list_debug_cons"
+        android:title="Debug / Consolidate"
+        android:visible="false"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/menu_key_list_debug_bench"
+        android:title="Debug / Benchmark"
+        android:visible="false"
+        app:showAsAction="never" />
 
     <item
         android:id="@+id/menu_key_list_debug_read"
-        app:showAsAction="never"
         android:title="Debug / DB restore"
-        android:visible="false" />
+        android:visible="false"
+        app:showAsAction="never" />
 
     <item
         android:id="@+id/menu_key_list_debug_write"
-        app:showAsAction="never"
         android:title="Debug / DB backup"
-        android:visible="false" />
+        android:visible="false"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/menu_key_list_debug_first_time"
+        android:title="Debug / Show first time screen"
+        android:visible="false"
+        app:showAsAction="never" />
 
 </menu>

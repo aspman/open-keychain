@@ -1,6 +1,5 @@
 /*
- * Copyright (C) 2012-2014 Dominik Schürmann <dominik@dominikschuermann.de>
- * Copyright (C) 2010-2014 Thialfihar <thi@thialfihar.org>
+ * Copyright (C) 2014 Dominik Schürmann <dominik@dominikschuermann.de>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,162 +17,216 @@
 
 package org.sufficientlysecure.keychain.ui;
 
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.util.ArrayList;
+
+import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
-import android.support.v4.view.PagerTabStrip;
-import android.support.v4.view.ViewPager;
+import android.support.annotation.Nullable;
+import android.support.v4.app.FragmentManager;
+import android.support.v4.app.FragmentTransaction;
 import android.widget.Toast;
 
-import org.sufficientlysecure.keychain.Constants;
 import org.sufficientlysecure.keychain.R;
-import org.sufficientlysecure.keychain.helper.FileHelper;
+import org.sufficientlysecure.keychain.intents.OpenKeychainIntents;
 import org.sufficientlysecure.keychain.pgp.PgpHelper;
-import org.sufficientlysecure.keychain.ui.adapter.PagerTabStripAdapter;
-import org.sufficientlysecure.keychain.util.Log;
+import org.sufficientlysecure.keychain.provider.TemporaryFileProvider;
+import org.sufficientlysecure.keychain.ui.base.BaseActivity;
 
-import java.util.regex.Matcher;
 
-public class DecryptActivity extends DrawerActivity {
+public class DecryptActivity extends BaseActivity {
 
     /* Intents */
-    public static final String ACTION_DECRYPT = Constants.INTENT_PREFIX + "DECRYPT";
-
-    /* EXTRA keys for input */
-    public static final String EXTRA_TEXT = "text";
-
-    ViewPager mViewPager;
-    PagerTabStrip mPagerTabStrip;
-    PagerTabStripAdapter mTabsAdapter;
-
-    Bundle mMessageFragmentBundle = new Bundle();
-    Bundle mFileFragmentBundle = new Bundle();
-    int mSwitchToTab = PAGER_TAB_MESSAGE;
-
-    private static final int PAGER_TAB_MESSAGE = 0;
-    private static final int PAGER_TAB_FILE = 1;
-
-    private void initView() {
-        mViewPager = (ViewPager) findViewById(R.id.decrypt_pager);
-        mPagerTabStrip = (PagerTabStrip) findViewById(R.id.decrypt_pager_tab_strip);
-
-        mTabsAdapter = new PagerTabStripAdapter(this);
-        mViewPager.setAdapter(mTabsAdapter);
-    }
+    public static final String ACTION_DECRYPT_FROM_CLIPBOARD = "DECRYPT_DATA_CLIPBOARD";
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        setContentView(R.layout.decrypt_activity);
+        setFullScreenDialogClose(Activity.RESULT_CANCELED, false);
 
-        initView();
-
-        setupDrawerNavigation(savedInstanceState);
-
-        // Handle intent actions, maybe changes the bundles
-        handleActions(getIntent());
-
-        mTabsAdapter.addTab(DecryptMessageFragment.class,
-            mMessageFragmentBundle, getString(R.string.label_message));
-        mTabsAdapter.addTab(DecryptFileFragment.class,
-            mFileFragmentBundle, getString(R.string.label_file));
-        mViewPager.setCurrentItem(mSwitchToTab);
+        // Handle intent actions
+        handleActions(savedInstanceState, getIntent());
     }
 
+    @Override
+    protected void initLayout() {
+        setContentView(R.layout.decrypt_files_activity);
+    }
 
     /**
      * Handles all actions with this intent
-     *
-     * @param intent
      */
-    private void handleActions(Intent intent) {
+    private void handleActions(Bundle savedInstanceState, Intent intent) {
+
+        // No need to initialize fragments if we are just being restored
+        if (savedInstanceState != null) {
+            return;
+        }
+
+        ArrayList<Uri> uris = new ArrayList<>();
+
         String action = intent.getAction();
-        Bundle extras = intent.getExtras();
-        String type = intent.getType();
-        Uri uri = intent.getData();
 
-        if (extras == null) {
-            extras = new Bundle();
+        if (action == null) {
+            Toast.makeText(this, "Error: No action specified!", Toast.LENGTH_LONG).show();
+            setResult(Activity.RESULT_CANCELED);
+            finish();
+            return;
         }
 
-        /*
-         * Android's Action
-         */
-        if (Intent.ACTION_SEND.equals(action) && type != null) {
-            // When sending to Keychain Decrypt via share menu
-            if ("text/plain".equals(type)) {
-                // Plain text
-                String sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
-                if (sharedText != null) {
-                    // handle like normal text decryption, override action and extras to later
-                    // executeServiceMethod ACTION_DECRYPT in main actions
-                    extras.putString(EXTRA_TEXT, sharedText);
-                    action = ACTION_DECRYPT;
+        // depending on the data source, we may or may not be able to delete the original file
+        boolean canDelete = false;
+
+        try {
+
+            switch (action) {
+                case Intent.ACTION_SEND: {
+                    // When sending to Keychain Decrypt via share menu
+                    // Binary via content provider (could also be files)
+                    // override uri to get stream from send
+                    if (intent.hasExtra(Intent.EXTRA_STREAM)) {
+                        uris.add(intent.<Uri>getParcelableExtra(Intent.EXTRA_STREAM));
+                    } else if (intent.hasExtra(Intent.EXTRA_TEXT)) {
+                        String text = intent.getStringExtra(Intent.EXTRA_TEXT);
+                        Uri uri = readToTempFile(text);
+                        if (uri != null) {
+                            uris.add(uri);
+                        }
+                    }
+
+                    break;
                 }
-            } else {
-                // Binary via content provider (could also be files)
-                // override uri to get stream from send
-                uri = (Uri) intent.getParcelableExtra(Intent.EXTRA_STREAM);
-                action = ACTION_DECRYPT;
-            }
-        } else if (Intent.ACTION_VIEW.equals(action)) {
-            // Android's Action when opening file associated to Keychain (see AndroidManifest.xml)
 
-            // override action
-            action = ACTION_DECRYPT;
-        }
+                case Intent.ACTION_SEND_MULTIPLE: {
+                    if (intent.hasExtra(Intent.EXTRA_STREAM)) {
+                        uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+                    } else if (intent.hasExtra(Intent.EXTRA_TEXT)) {
+                        for (String text : intent.getStringArrayListExtra(Intent.EXTRA_TEXT)) {
+                            Uri uri = readToTempFile(text);
+                            if (uri != null) {
+                                uris.add(uri);
+                            }
+                        }
+                    }
 
-        String textData = extras.getString(EXTRA_TEXT);
-
-        /**
-         * Main Actions
-         */
-        if (ACTION_DECRYPT.equals(action) && textData != null) {
-            Log.d(Constants.TAG, "textData not null, matching text ...");
-            Matcher matcher = PgpHelper.PGP_MESSAGE.matcher(textData);
-            if (matcher.matches()) {
-                Log.d(Constants.TAG, "PGP_MESSAGE matched");
-                textData = matcher.group(1);
-                // replace non breakable spaces
-                textData = textData.replaceAll("\\xa0", " ");
-
-                mMessageFragmentBundle.putString(DecryptMessageFragment.ARG_CIPHERTEXT, textData);
-                mSwitchToTab = PAGER_TAB_MESSAGE;
-            } else {
-                matcher = PgpHelper.PGP_CLEARTEXT_SIGNATURE.matcher(textData);
-                if (matcher.matches()) {
-                    Log.d(Constants.TAG, "PGP_CLEARTEXT_SIGNATURE matched");
-                    textData = matcher.group(1);
-                    // replace non breakable spaces
-                    textData = textData.replaceAll("\\xa0", " ");
-
-                    mMessageFragmentBundle.putString(DecryptMessageFragment.ARG_CIPHERTEXT, textData);
-                    mSwitchToTab = PAGER_TAB_MESSAGE;
-                } else {
-                    Log.d(Constants.TAG, "Nothing matched!");
+                    break;
                 }
-            }
-        } else if (ACTION_DECRYPT.equals(action) && uri != null) {
-            // get file path from uri
-            String path = FileHelper.getPath(this, uri);
 
-            if (path != null) {
-                mFileFragmentBundle.putString(DecryptFileFragment.ARG_FILENAME, path);
-                mSwitchToTab = PAGER_TAB_FILE;
-            } else {
-                Log.e(Constants.TAG,
-                        "Direct binary data without actual file in filesystem is not supported. " +
-                        "Please use the Remote Service API!");
-                Toast.makeText(this, R.string.error_only_files_are_supported, Toast.LENGTH_LONG)
-                        .show();
-                // end activity
-                finish();
+                case ACTION_DECRYPT_FROM_CLIPBOARD: {
+                    ClipboardManager clipMan = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (clipMan == null) {
+                        break;
+                    }
+
+                    ClipData clip = clipMan.getPrimaryClip();
+                    if (clip == null) {
+                        break;
+                    }
+
+                    // check if data is available as uri
+                    Uri uri = null;
+                    for (int i = 0; i < clip.getItemCount(); i++) {
+                        ClipData.Item item = clip.getItemAt(i);
+                        Uri itemUri = item.getUri();
+                        if (itemUri != null) {
+                            uri = itemUri;
+                            break;
+                        }
+                    }
+
+                    // otherwise, coerce to text (almost always possible) and work from there
+                    if (uri == null) {
+                        String text = clip.getItemAt(0).coerceToText(this).toString();
+                        uri = readToTempFile(text);
+                    }
+                    if (uri != null) {
+                        uris.add(uri);
+                    }
+
+                    break;
+                }
+
+                // for everything else, just work on the intent data
+                case Intent.ACTION_VIEW:
+                    canDelete = true;
+                case OpenKeychainIntents.DECRYPT_DATA:
+                default:
+                    Uri uri = intent.getData();
+                    if (uri != null) {
+
+                        if ("com.android.email.attachmentprovider".equals(uri.getHost())) {
+                            Toast.makeText(this, R.string.error_reading_aosp, Toast.LENGTH_LONG).show();
+                            finish();
+                            return;
+                        }
+
+                        uris.add(uri);
+                    }
+
             }
-        } else {
-            Log.e(Constants.TAG,
-                    "Include the extra 'text' or an Uri with setData() in your Intent!");
+
+        } catch (IOException e) {
+            Toast.makeText(this, R.string.error_reading_text, Toast.LENGTH_LONG).show();
+            finish();
+            return;
         }
+
+        // Definitely need a data uri with the decrypt_data intent
+        if (uris.isEmpty()) {
+            Toast.makeText(this, "No data to decrypt!", Toast.LENGTH_LONG).show();
+            setResult(Activity.RESULT_CANCELED);
+            finish();
+            return;
+        }
+
+        displayListFragment(uris, canDelete);
+
+    }
+
+    @Nullable
+    public Uri readToTempFile(String text) throws IOException {
+        Uri tempFile = TemporaryFileProvider.createFile(this);
+        OutputStream outStream = getContentResolver().openOutputStream(tempFile);
+        if (outStream == null) {
+            return null;
+        }
+
+        // clean up ascii armored message, fixing newlines and stuff
+        String cleanedText = PgpHelper.getPgpMessageContent(text);
+        if (cleanedText == null) {
+            return null;
+        }
+
+        // if cleanup didn't work, just try the raw data
+        outStream.write(cleanedText.getBytes());
+        outStream.close();
+        return tempFile;
+    }
+
+    public void displayListFragment(ArrayList<Uri> inputUris, boolean canDelete) {
+
+        DecryptListFragment frag = DecryptListFragment.newInstance(inputUris, canDelete);
+
+        FragmentManager fragMan = getSupportFragmentManager();
+
+        FragmentTransaction trans = fragMan.beginTransaction();
+        trans.replace(R.id.decrypt_files_fragment_container, frag);
+
+        // if there already is a fragment, allow going back to that. otherwise, we're top level!
+        if (fragMan.getFragments() != null && !fragMan.getFragments().isEmpty()) {
+            trans.addToBackStack("list");
+        }
+
+        trans.commit();
+
     }
 
 }

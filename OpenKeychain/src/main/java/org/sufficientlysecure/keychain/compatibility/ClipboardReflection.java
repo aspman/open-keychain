@@ -17,79 +17,35 @@
 
 package org.sufficientlysecure.keychain.compatibility;
 
+
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
+import android.support.annotation.Nullable;
 
 import org.sufficientlysecure.keychain.Constants;
 import org.sufficientlysecure.keychain.util.Log;
 
-import java.lang.reflect.Method;
-
 public class ClipboardReflection {
 
-    private static final String clipboardLabel = "Keychain";
-
-    /**
-     * Wrapper around ClipboardManager based on Android version using Reflection API
-     *
-     * @param context
-     * @param text
-     */
-    public static void copyToClipboard(Context context, String text) {
-        Object clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE);
-        try {
-            if ("android.text.ClipboardManager".equals(clipboard.getClass().getName())) {
-                Method methodSetText = clipboard.getClass()
-                        .getMethod("setText", CharSequence.class);
-                methodSetText.invoke(clipboard, text);
-            } else if ("android.content.ClipboardManager".equals(clipboard.getClass().getName())) {
-                Class<?> classClipData = Class.forName("android.content.ClipData");
-                Method methodNewPlainText = classClipData.getMethod("newPlainText",
-                        CharSequence.class, CharSequence.class);
-                Object clip = methodNewPlainText.invoke(null, clipboardLabel, text);
-                methodNewPlainText = clipboard.getClass()
-                        .getMethod("setPrimaryClip", classClipData);
-                methodNewPlainText.invoke(clipboard, clip);
-            }
-        } catch (Exception e) {
-            Log.e(Constants.TAG, "There was an error copying the text to the clipboard", e);
-        }
-    }
-
-    /**
-     * Wrapper around ClipboardManager based on Android version using Reflection API
-     *
-     * @param context
-     */
-    public static CharSequence getClipboardText(Context context) {
-        Object clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE);
-        try {
-            if ("android.text.ClipboardManager".equals(clipboard.getClass().getName())) {
-                // CharSequence text = clipboard.getText();
-                Method methodGetText = clipboard.getClass().getMethod("getText");
-                Object text = methodGetText.invoke(clipboard);
-
-                return (CharSequence) text;
-            } else if ("android.content.ClipboardManager".equals(clipboard.getClass().getName())) {
-                // ClipData clipData = clipboard.getPrimaryClip();
-                Method methodGetPrimaryClip = clipboard.getClass().getMethod("getPrimaryClip");
-                Object clipData = methodGetPrimaryClip.invoke(clipboard);
-
-                // ClipData.Item clipDataItem = clipData.getItemAt(0);
-                Method methodGetItemAt = clipData.getClass().getMethod("getItemAt", int.class);
-                Object clipDataItem = methodGetItemAt.invoke(clipData, 0);
-
-                // CharSequence text = clipDataItem.coerceToText(context);
-                Method methodGetString = clipDataItem.getClass().getMethod("coerceToText",
-                        Context.class);
-                Object text = methodGetString.invoke(clipDataItem, context);
-
-                return (CharSequence) text;
-            } else {
-                return null;
-            }
-        } catch (Exception e) {
-            Log.e(Constants.TAG, "There was an error getting the text from the clipboard", e);
+    @Nullable
+    public static String getClipboardText(@Nullable Context context) {
+        if (context == null) {
             return null;
         }
+        ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+
+        ClipData clip = clipboard.getPrimaryClip();
+        if (clip == null || clip.getItemCount() == 0) {
+            Log.e(Constants.TAG, "No clipboard data!");
+            return null;
+        }
+
+        ClipData.Item item = clip.getItemAt(0);
+        CharSequence seq = item.coerceToText(context);
+        if (seq != null) {
+            return seq.toString();
+        }
+        return null;
     }
 }

@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2012-2014 Dominik Schürmann <dominik@dominikschuermann.de>
+ * Copyright (C) 2014 Vincent Breitmoser <v.breitmoser@mugenguild.com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,6 +18,7 @@
 
 package org.sufficientlysecure.keychain.provider;
 
+
 import android.content.ContentProviderOperation;
 import android.content.ContentResolver;
 import android.content.ContentValues;
@@ -25,53 +27,67 @@ import android.content.OperationApplicationException;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.RemoteException;
+import android.support.annotation.NonNull;
 import android.support.v4.util.LongSparseArray;
 
 import org.sufficientlysecure.keychain.Constants;
+import org.sufficientlysecure.keychain.R;
+import org.sufficientlysecure.keychain.keyimport.ParcelableKeyRing;
+import org.sufficientlysecure.keychain.operations.ImportOperation;
+import org.sufficientlysecure.keychain.operations.results.ConsolidateResult;
+import org.sufficientlysecure.keychain.operations.results.ImportKeyResult;
+import org.sufficientlysecure.keychain.operations.results.OperationResult.LogType;
+import org.sufficientlysecure.keychain.operations.results.OperationResult.OperationLog;
+import org.sufficientlysecure.keychain.operations.results.SaveKeyringResult;
+import org.sufficientlysecure.keychain.pgp.CanonicalizedPublicKey;
+import org.sufficientlysecure.keychain.pgp.CanonicalizedPublicKeyRing;
+import org.sufficientlysecure.keychain.pgp.CanonicalizedSecretKey;
+import org.sufficientlysecure.keychain.pgp.CanonicalizedSecretKey.SecretKeyType;
+import org.sufficientlysecure.keychain.pgp.CanonicalizedSecretKeyRing;
 import org.sufficientlysecure.keychain.pgp.KeyRing;
-import org.sufficientlysecure.keychain.pgp.WrappedPublicKey;
-import org.sufficientlysecure.keychain.service.OperationResultParcel.LogType;
-import org.sufficientlysecure.keychain.service.OperationResultParcel.LogLevel;
-import org.sufficientlysecure.keychain.service.OperationResultParcel.OperationLog;
-import org.sufficientlysecure.keychain.pgp.PgpHelper;
-import org.sufficientlysecure.keychain.pgp.PgpKeyHelper;
+import org.sufficientlysecure.keychain.pgp.Progressable;
 import org.sufficientlysecure.keychain.pgp.UncachedKeyRing;
 import org.sufficientlysecure.keychain.pgp.UncachedPublicKey;
-import org.sufficientlysecure.keychain.pgp.WrappedPublicKeyRing;
-import org.sufficientlysecure.keychain.pgp.WrappedSecretKeyRing;
 import org.sufficientlysecure.keychain.pgp.WrappedSignature;
+import org.sufficientlysecure.keychain.pgp.WrappedUserAttribute;
 import org.sufficientlysecure.keychain.pgp.exception.PgpGeneralException;
-import org.sufficientlysecure.keychain.provider.KeychainContract.ApiApps;
+import org.sufficientlysecure.keychain.pgp.exception.PgpKeyNotFoundException;
 import org.sufficientlysecure.keychain.provider.KeychainContract.Certs;
 import org.sufficientlysecure.keychain.provider.KeychainContract.KeyRingData;
 import org.sufficientlysecure.keychain.provider.KeychainContract.KeyRings;
 import org.sufficientlysecure.keychain.provider.KeychainContract.Keys;
-import org.sufficientlysecure.keychain.provider.KeychainContract.UserIds;
-import org.sufficientlysecure.keychain.remote.AccountSettings;
-import org.sufficientlysecure.keychain.remote.AppSettings;
-import org.sufficientlysecure.keychain.service.OperationResults.SaveKeyringResult;
+import org.sufficientlysecure.keychain.provider.KeychainContract.UpdatedKeys;
+import org.sufficientlysecure.keychain.provider.KeychainContract.UserPackets;
+import org.sufficientlysecure.keychain.ui.util.KeyFormattingUtils;
 import org.sufficientlysecure.keychain.util.IterableIterator;
 import org.sufficientlysecure.keychain.util.Log;
+import org.sufficientlysecure.keychain.util.ParcelableFileCache;
+import org.sufficientlysecure.keychain.util.ParcelableFileCache.IteratorWithSize;
+import org.sufficientlysecure.keychain.util.Preferences;
+import org.sufficientlysecure.keychain.util.ProgressFixedScaler;
+import org.sufficientlysecure.keychain.util.ProgressScaler;
+import org.sufficientlysecure.keychain.util.Utf8Util;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
-import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
-/** This class contains high level methods for database access. Despite its
+/**
+ * This class contains high level methods for database access. Despite its
  * name, it is not only a helper but actually the main interface for all
  * synchronous database operations.
- *
- * Operations in this class write logs (TODO). These can be obtained from the
+ * <p/>
+ * Operations in this class write logs. These can be obtained from the
  * OperationResultParcel return values directly, but are also accumulated over
  * the lifetime of the executing ProviderHelper object unless the resetLog()
  * method is called to start a new one specifically.
- *
  */
 public class ProviderHelper {
     private final Context mContext;
@@ -83,19 +99,15 @@ public class ProviderHelper {
         this(context, new OperationLog(), 0);
     }
 
+    public ProviderHelper(Context context, OperationLog log) {
+        this(context, log, 0);
+    }
+
     public ProviderHelper(Context context, OperationLog log, int indent) {
         mContext = context;
         mContentResolver = context.getContentResolver();
         mLog = log;
         mIndent = indent;
-    }
-
-    public void resetLog() {
-        if(mLog != null) {
-            // Start a new log (leaving the old one intact)
-            mLog = new OperationLog();
-            mIndent = 0;
-        }
     }
 
     public OperationLog getLog() {
@@ -111,15 +123,20 @@ public class ProviderHelper {
         }
     }
 
-    public void log(LogLevel level, LogType type) {
-        if(mLog != null) {
-            mLog.add(level, type, null, mIndent);
+    public void log(LogType type) {
+        if (mLog != null) {
+            mLog.add(type, mIndent);
         }
     }
-    public void log(LogLevel level, LogType type, String[] parameters) {
-        if(mLog != null) {
-            mLog.add(level, type, parameters, mIndent);
+
+    public void log(LogType type, Object... parameters) {
+        if (mLog != null) {
+            mLog.add(type, mIndent, parameters);
         }
+    }
+
+    public void clearLog() {
+        mLog = new OperationLog();
     }
 
     // If we ever switch to api level 11, we can ditch this whole mess!
@@ -131,15 +148,29 @@ public class ProviderHelper {
     public static final int FIELD_TYPE_BLOB = 5;
 
     public Object getGenericData(Uri uri, String column, int type) throws NotFoundException {
-        return getGenericData(uri, new String[]{column}, new int[]{type}).get(column);
+        Object result = getGenericData(uri, new String[]{column}, new int[]{type}, null).get(column);
+        if (result == null) {
+            throw new NotFoundException();
+        }
+        return result;
+    }
+
+    public Object getGenericData(Uri uri, String column, int type, String selection)
+            throws NotFoundException {
+        return getGenericData(uri, new String[]{column}, new int[]{type}, selection).get(column);
     }
 
     public HashMap<String, Object> getGenericData(Uri uri, String[] proj, int[] types)
             throws NotFoundException {
-        Cursor cursor = mContentResolver.query(uri, proj, null, null, null);
+        return getGenericData(uri, proj, types, null);
+    }
+
+    public HashMap<String, Object> getGenericData(Uri uri, String[] proj, int[] types, String selection)
+            throws NotFoundException {
+        Cursor cursor = mContentResolver.query(uri, proj, selection, null, null);
 
         try {
-            HashMap<String, Object> result = new HashMap<String, Object>(proj.length);
+            HashMap<String, Object> result = new HashMap<>(proj.length);
             if (cursor != null && cursor.moveToFirst()) {
                 int pos = 0;
                 for (String p : proj) {
@@ -162,6 +193,9 @@ public class ProviderHelper {
                     }
                     pos += 1;
                 }
+            } else {
+                // If no data was found, throw an appropriate exception
+                throw new NotFoundException();
             }
 
             return result;
@@ -177,58 +211,69 @@ public class ProviderHelper {
         return getGenericData(KeyRings.buildUnifiedKeyRingUri(masterKeyId), proj, types);
     }
 
-    private LongSparseArray<WrappedPublicKey> getTrustedMasterKeys() {
-        Cursor cursor = mContentResolver.query(KeyRings.buildUnifiedKeyRingsUri(), new String[] {
+    private LongSparseArray<CanonicalizedPublicKey> getTrustedMasterKeys() {
+        Cursor cursor = mContentResolver.query(KeyRings.buildUnifiedKeyRingsUri(), new String[]{
                 KeyRings.MASTER_KEY_ID,
                 // we pick from cache only information that is not easily available from keyrings
                 KeyRings.HAS_ANY_SECRET, KeyRings.VERIFIED,
                 // and of course, ring data
                 KeyRings.PUBKEY_DATA
-            }, KeyRings.HAS_ANY_SECRET + " = 1", null, null);
+        }, KeyRings.HAS_ANY_SECRET + " = 1", null, null);
 
-        LongSparseArray<WrappedPublicKey> result =
-                new LongSparseArray<WrappedPublicKey>(cursor.getCount());
         try {
+            LongSparseArray<CanonicalizedPublicKey> result = new LongSparseArray<>();
+
             if (cursor != null && cursor.moveToFirst()) do {
                 long masterKeyId = cursor.getLong(0);
-                boolean hasAnySecret = cursor.getInt(1) > 0;
                 int verified = cursor.getInt(2);
                 byte[] blob = cursor.getBlob(3);
                 if (blob != null) {
                     result.put(masterKeyId,
-                            new WrappedPublicKeyRing(blob, hasAnySecret, verified).getSubkey());
+                            new CanonicalizedPublicKeyRing(blob, verified).getPublicKey());
                 }
             } while (cursor.moveToNext());
+
+            return result;
+
         } finally {
             if (cursor != null) {
                 cursor.close();
             }
         }
 
-        return result;
     }
 
-    public CachedPublicKeyRing getCachedPublicKeyRing(Uri queryUri) {
-        return new CachedPublicKeyRing(this, queryUri);
+    public long getMasterKeyId(long subKeyId) throws NotFoundException {
+        return (Long) getGenericData(KeyRings.buildUnifiedKeyRingsFindBySubkeyUri(subKeyId),
+                KeyRings.MASTER_KEY_ID, FIELD_TYPE_INTEGER);
     }
 
-    public WrappedPublicKeyRing getWrappedPublicKeyRing(long id) throws NotFoundException {
-        return (WrappedPublicKeyRing) getWrappedKeyRing(KeyRings.buildUnifiedKeyRingUri(id), false);
+    public CachedPublicKeyRing getCachedPublicKeyRing(Uri queryUri) throws PgpKeyNotFoundException {
+        long masterKeyId = new CachedPublicKeyRing(this, queryUri).extractOrGetMasterKeyId();
+        return getCachedPublicKeyRing(masterKeyId);
     }
 
-    public WrappedPublicKeyRing getWrappedPublicKeyRing(Uri queryUri) throws NotFoundException {
-        return (WrappedPublicKeyRing) getWrappedKeyRing(queryUri, false);
+    public CachedPublicKeyRing getCachedPublicKeyRing(long id) {
+        return new CachedPublicKeyRing(this, KeyRings.buildUnifiedKeyRingUri(id));
     }
 
-    public WrappedSecretKeyRing getWrappedSecretKeyRing(long id) throws NotFoundException {
-        return (WrappedSecretKeyRing) getWrappedKeyRing(KeyRings.buildUnifiedKeyRingUri(id), true);
+    public CanonicalizedPublicKeyRing getCanonicalizedPublicKeyRing(long id) throws NotFoundException {
+        return (CanonicalizedPublicKeyRing) getCanonicalizedKeyRing(KeyRings.buildUnifiedKeyRingUri(id), false);
     }
 
-    public WrappedSecretKeyRing getWrappedSecretKeyRing(Uri queryUri) throws NotFoundException {
-        return (WrappedSecretKeyRing) getWrappedKeyRing(queryUri, true);
+    public CanonicalizedPublicKeyRing getCanonicalizedPublicKeyRing(Uri queryUri) throws NotFoundException {
+        return (CanonicalizedPublicKeyRing) getCanonicalizedKeyRing(queryUri, false);
     }
 
-    private KeyRing getWrappedKeyRing(Uri queryUri, boolean secret) throws NotFoundException {
+    public CanonicalizedSecretKeyRing getCanonicalizedSecretKeyRing(long id) throws NotFoundException {
+        return (CanonicalizedSecretKeyRing) getCanonicalizedKeyRing(KeyRings.buildUnifiedKeyRingUri(id), true);
+    }
+
+    public CanonicalizedSecretKeyRing getCanonicalizedSecretKeyRing(Uri queryUri) throws NotFoundException {
+        return (CanonicalizedSecretKeyRing) getCanonicalizedKeyRing(queryUri, true);
+    }
+
+    private KeyRing getCanonicalizedKeyRing(Uri queryUri, boolean secret) throws NotFoundException {
         Cursor cursor = mContentResolver.query(queryUri,
                 new String[]{
                         // we pick from cache only information that is not easily available from keyrings
@@ -243,12 +288,12 @@ public class ProviderHelper {
                 boolean hasAnySecret = cursor.getInt(0) > 0;
                 int verified = cursor.getInt(1);
                 byte[] blob = cursor.getBlob(2);
-                if(secret &! hasAnySecret) {
+                if (secret & !hasAnySecret) {
                     throw new NotFoundException("Secret key not available!");
                 }
                 return secret
-                        ? new WrappedSecretKeyRing(blob, true, verified)
-                        : new WrappedPublicKeyRing(blob, hasAnySecret, verified);
+                        ? new CanonicalizedSecretKeyRing(blob, true, verified)
+                        : new CanonicalizedPublicKeyRing(blob, verified);
             } else {
                 throw new NotFoundException("Key not found!");
             }
@@ -259,72 +304,82 @@ public class ProviderHelper {
         }
     }
 
+    // bits, in order: CESA. make SURE these are correct, we will get bad log entries otherwise!!
+    static final LogType LOG_TYPES_FLAG_MASTER[] = new LogType[]{
+            LogType.MSG_IP_MASTER_FLAGS_XXXX, LogType.MSG_IP_MASTER_FLAGS_CXXX,
+            LogType.MSG_IP_MASTER_FLAGS_XEXX, LogType.MSG_IP_MASTER_FLAGS_CEXX,
+            LogType.MSG_IP_MASTER_FLAGS_XXSX, LogType.MSG_IP_MASTER_FLAGS_CXSX,
+            LogType.MSG_IP_MASTER_FLAGS_XESX, LogType.MSG_IP_MASTER_FLAGS_CESX,
+            LogType.MSG_IP_MASTER_FLAGS_XXXA, LogType.MSG_IP_MASTER_FLAGS_CXXA,
+            LogType.MSG_IP_MASTER_FLAGS_XEXA, LogType.MSG_IP_MASTER_FLAGS_CEXA,
+            LogType.MSG_IP_MASTER_FLAGS_XXSA, LogType.MSG_IP_MASTER_FLAGS_CXSA,
+            LogType.MSG_IP_MASTER_FLAGS_XESA, LogType.MSG_IP_MASTER_FLAGS_CESA
+    };
+
+    // same as above, but for subkeys
+    static final LogType LOG_TYPES_FLAG_SUBKEY[] = new LogType[]{
+            LogType.MSG_IP_SUBKEY_FLAGS_XXXX, LogType.MSG_IP_SUBKEY_FLAGS_CXXX,
+            LogType.MSG_IP_SUBKEY_FLAGS_XEXX, LogType.MSG_IP_SUBKEY_FLAGS_CEXX,
+            LogType.MSG_IP_SUBKEY_FLAGS_XXSX, LogType.MSG_IP_SUBKEY_FLAGS_CXSX,
+            LogType.MSG_IP_SUBKEY_FLAGS_XESX, LogType.MSG_IP_SUBKEY_FLAGS_CESX,
+            LogType.MSG_IP_SUBKEY_FLAGS_XXXA, LogType.MSG_IP_SUBKEY_FLAGS_CXXA,
+            LogType.MSG_IP_SUBKEY_FLAGS_XEXA, LogType.MSG_IP_SUBKEY_FLAGS_CEXA,
+            LogType.MSG_IP_SUBKEY_FLAGS_XXSA, LogType.MSG_IP_SUBKEY_FLAGS_CXSA,
+            LogType.MSG_IP_SUBKEY_FLAGS_XESA, LogType.MSG_IP_SUBKEY_FLAGS_CESA
+    };
+
     /**
-     * Saves PGPPublicKeyRing with its keys and userIds in DB
+     * Saves an UncachedKeyRing of the public variant into the db.
+     * <p/>
+     * This method will not delete all previous data for this masterKeyId from the database prior
+     * to inserting. All public data is effectively re-inserted, secret keyrings are left deleted
+     * and need to be saved externally to be preserved past the operation.
      */
     @SuppressWarnings("unchecked")
-    public SaveKeyringResult savePublicKeyRing(UncachedKeyRing keyRing) {
-        if (keyRing.isSecret()) {
-            log(LogLevel.ERROR, LogType.MSG_IP_BAD_TYPE_SECRET);
-            return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog);
-        }
+    private int saveCanonicalizedPublicKeyRing(CanonicalizedPublicKeyRing keyRing,
+                                               Progressable progress, boolean selfCertsAreTrusted) {
 
         // start with ok result
         int result = SaveKeyringResult.SAVED_PUBLIC;
 
         long masterKeyId = keyRing.getMasterKeyId();
-        log(LogLevel.START, LogType.MSG_IP,
-                new String[]{ PgpKeyHelper.convertKeyIdToHex(masterKeyId) });
-        mIndent += 1;
-
-        // Canonicalize this key, to assert a number of assumptions made about it.
-        keyRing = keyRing.canonicalize(mLog, mIndent);
-
         UncachedPublicKey masterKey = keyRing.getPublicKey();
-
-        // IF there is a secret key, preserve it!
-        UncachedKeyRing secretRing;
-        try {
-            secretRing = getWrappedSecretKeyRing(masterKeyId).getUncached();
-            log(LogLevel.DEBUG, LogType.MSG_IP_PRESERVING_SECRET);
-        } catch (NotFoundException e) {
-            secretRing = null;
-        }
 
         ArrayList<ContentProviderOperation> operations;
         try {
 
-            log(LogLevel.DEBUG, LogType.MSG_IP_PREPARE);
+            log(LogType.MSG_IP_PREPARE);
             mIndent += 1;
 
             // save all keys and userIds included in keyRing object in database
-            operations = new ArrayList<ContentProviderOperation>();
+            operations = new ArrayList<>();
 
-            log(LogLevel.INFO, LogType.MSG_IP_INSERT_KEYRING);
+            log(LogType.MSG_IP_INSERT_KEYRING);
             { // insert keyring
-                // insert new version of this keyRing
                 ContentValues values = new ContentValues();
                 values.put(KeyRingData.MASTER_KEY_ID, masterKeyId);
                 try {
                     values.put(KeyRingData.KEY_RING_DATA, keyRing.getEncoded());
                 } catch (IOException e) {
-                    log(LogLevel.ERROR, LogType.MSG_IP_ENCODE_FAIL);
-                    return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog);
+                    log(LogType.MSG_IP_ENCODE_FAIL);
+                    return SaveKeyringResult.RESULT_ERROR;
                 }
 
-                Uri uri = KeyRingData.buildPublicKeyRingUri(Long.toString(masterKeyId));
+                Uri uri = KeyRingData.buildPublicKeyRingUri(masterKeyId);
                 operations.add(ContentProviderOperation.newInsert(uri).withValues(values).build());
             }
 
-            log(LogLevel.INFO, LogType.MSG_IP_INSERT_SUBKEYS);
+            log(LogType.MSG_IP_INSERT_SUBKEYS);
+            progress.setProgress(LogType.MSG_IP_INSERT_SUBKEYS.getMsgId(), 40, 100);
             mIndent += 1;
             { // insert subkeys
-                Uri uri = Keys.buildKeysUri(Long.toString(masterKeyId));
+                Uri uri = Keys.buildKeysUri(masterKeyId);
                 int rank = 0;
-                for (UncachedPublicKey key : new IterableIterator<UncachedPublicKey>(keyRing.getPublicKeys())) {
-                    log(LogLevel.DEBUG, LogType.MSG_IP_SUBKEY, new String[]{
-                            PgpKeyHelper.convertKeyIdToHex(key.getKeyId())
-                    });
+                for (CanonicalizedPublicKey key : keyRing.publicKeyIterator()) {
+                    long keyId = key.getKeyId();
+                    log(keyId == masterKeyId ? LogType.MSG_IP_MASTER : LogType.MSG_IP_SUBKEY,
+                            KeyFormattingUtils.convertKeyIdToHex(keyId)
+                    );
                     mIndent += 1;
 
                     ContentValues values = new ContentValues();
@@ -333,29 +388,29 @@ public class ProviderHelper {
 
                     values.put(Keys.KEY_ID, key.getKeyId());
                     values.put(Keys.KEY_SIZE, key.getBitStrength());
+                    values.put(Keys.KEY_CURVE_OID, key.getCurveOid());
                     values.put(Keys.ALGORITHM, key.getAlgorithm());
                     values.put(Keys.FINGERPRINT, key.getFingerprint());
 
-                    boolean c = key.canCertify(), e = key.canEncrypt(), s = key.canSign();
+                    boolean c = key.canCertify(), e = key.canEncrypt(), s = key.canSign(), a = key.canAuthenticate();
                     values.put(Keys.CAN_CERTIFY, c);
                     values.put(Keys.CAN_ENCRYPT, e);
                     values.put(Keys.CAN_SIGN, s);
+                    values.put(Keys.CAN_AUTHENTICATE, a);
                     values.put(Keys.IS_REVOKED, key.isRevoked());
-                    if (c) {
-                        if (e) {
-                            log(LogLevel.DEBUG, s ? LogType.MSG_IP_SUBKEY_FLAGS_CES
-                                    : LogType.MSG_IP_SUBKEY_FLAGS_CEX, null);
+
+                    // see above
+                    if (masterKeyId == keyId) {
+                        if (key.getKeyUsage() == null) {
+                            log(LogType.MSG_IP_MASTER_FLAGS_UNSPECIFIED);
                         } else {
-                            log(LogLevel.DEBUG, s ? LogType.MSG_IP_SUBKEY_FLAGS_CXS
-                                    : LogType.MSG_IP_SUBKEY_FLAGS_CXX, null);
+                            log(LOG_TYPES_FLAG_MASTER[(c ? 1 : 0) + (e ? 2 : 0) + (s ? 4 : 0) + (a ? 8 : 0)]);
                         }
                     } else {
-                        if (e) {
-                            log(LogLevel.DEBUG, s ? LogType.MSG_IP_SUBKEY_FLAGS_XES
-                                    : LogType.MSG_IP_SUBKEY_FLAGS_XEX, null);
+                        if (key.getKeyUsage() == null) {
+                            log(LogType.MSG_IP_SUBKEY_FLAGS_UNSPECIFIED);
                         } else {
-                            log(LogLevel.DEBUG, s ? LogType.MSG_IP_SUBKEY_FLAGS_XXS
-                                    : LogType.MSG_IP_SUBKEY_FLAGS_XXX, null);
+                            log(LOG_TYPES_FLAG_SUBKEY[(c ? 1 : 0) + (e ? 2 : 0) + (s ? 4 : 0) + (a ? 8 : 0)]);
                         }
                     }
 
@@ -365,13 +420,13 @@ public class ProviderHelper {
                     if (expiryDate != null) {
                         values.put(Keys.EXPIRY, expiryDate.getTime() / 1000);
                         if (key.isExpired()) {
-                            log(LogLevel.DEBUG, LogType.MSG_IP_SUBKEY_EXPIRED, new String[]{
-                                    expiryDate.toString()
-                            });
+                            log(keyId == masterKeyId ?
+                                            LogType.MSG_IP_MASTER_EXPIRED : LogType.MSG_IP_SUBKEY_EXPIRED,
+                                    expiryDate.toString());
                         } else {
-                            log(LogLevel.DEBUG, LogType.MSG_IP_SUBKEY_EXPIRES, new String[]{
-                                    expiryDate.toString()
-                            });
+                            log(keyId == masterKeyId ?
+                                            LogType.MSG_IP_MASTER_EXPIRES : LogType.MSG_IP_SUBKEY_EXPIRES,
+                                    expiryDate.toString());
                         }
                     }
 
@@ -383,266 +438,979 @@ public class ProviderHelper {
             mIndent -= 1;
 
             // get a list of owned secret keys, for verification filtering
-            LongSparseArray<WrappedPublicKey> trustedKeys = getTrustedMasterKeys();
+            LongSparseArray<CanonicalizedPublicKey> trustedKeys = getTrustedMasterKeys();
 
             // classify and order user ids. primary are moved to the front, revoked to the back,
             // otherwise the order in the keyfile is preserved.
-            log(LogLevel.INFO, LogType.MSG_IP_UID_CLASSIFYING, new String[]{
-                    Integer.toString(trustedKeys.size())
-            });
-            mIndent += 1;
-            List<UserIdItem> uids = new ArrayList<UserIdItem>();
-            for (String userId : new IterableIterator<String>(
-                    masterKey.getUnorderedUserIds().iterator())) {
-                UserIdItem item = new UserIdItem();
-                uids.add(item);
-                item.userId = userId;
+            List<UserPacketItem> uids = new ArrayList<>();
 
+            if (trustedKeys.size() == 0) {
+                log(LogType.MSG_IP_UID_CLASSIFYING_ZERO);
+            } else {
+                log(LogType.MSG_IP_UID_CLASSIFYING, trustedKeys.size());
+            }
+            mIndent += 1;
+            for (byte[] rawUserId : masterKey.getUnorderedRawUserIds()) {
+                String userId = Utf8Util.fromUTF8ByteArrayReplaceBadEncoding(rawUserId);
+                UserPacketItem item = new UserPacketItem();
+                uids.add(item);
+                KeyRing.UserId splitUserId =  KeyRing.splitUserId(userId);
+                item.userId = userId;
+                item.name = splitUserId.name;
+                item.email = splitUserId.email;
+                item.comment = splitUserId.comment;
                 int unknownCerts = 0;
 
-                log(LogLevel.INFO, LogType.MSG_IP_UID_PROCESSING, new String[]{ userId });
+                log(LogType.MSG_IP_UID_PROCESSING, userId);
                 mIndent += 1;
                 // look through signatures for this specific key
-                for (WrappedSignature cert : new IterableIterator<WrappedSignature>(
-                        masterKey.getSignaturesForId(userId))) {
+                for (WrappedSignature cert : new IterableIterator<>(
+                        masterKey.getSignaturesForRawId(rawUserId))) {
                     long certId = cert.getKeyId();
-                    try {
-                        // self signature
-                        if (certId == masterKeyId) {
+                    // self signature
+                    if (certId == masterKeyId) {
 
-                            // NOTE self-certificates are already verified during canonicalization,
-                            // AND we know there is at most one cert plus at most one revocation
-                            if (!cert.isRevocation()) {
-                                item.selfCert = cert;
-                                item.isPrimary = cert.isPrimaryUserId();
-                                log(LogLevel.DEBUG, LogType.MSG_IP_UID_SELF_GOOD);
-                            } else {
-                                item.isRevoked = true;
-                                log(LogLevel.DEBUG, LogType.MSG_IP_UID_REVOKED);
-                            }
-
+                        // NOTE self-certificates are already verified during canonicalization,
+                        // AND we know there is at most one cert plus at most one revocation
+                        if (!cert.isRevocation()) {
+                            item.selfCert = cert;
+                            item.isPrimary = cert.isPrimaryUserId();
+                        } else {
+                            item.selfRevocation = cert;
+                            log(LogType.MSG_IP_UID_REVOKED);
                         }
+                        continue;
 
-                        // verify signatures from known private keys
-                        if (trustedKeys.indexOfKey(certId) >= 0) {
-                            WrappedPublicKey trustedKey = trustedKeys.get(certId);
-                            cert.init(trustedKey);
-                            if (cert.verifySignature(masterKey, userId)) {
-                                item.trustedCerts.add(cert);
-                                log(LogLevel.INFO, LogType.MSG_IP_UID_CERT_GOOD, new String[] {
-                                        PgpKeyHelper.convertKeyIdToHexShort(trustedKey.getKeyId()),
-                                        trustedKey.getPrimaryUserId()
-                                });
-                            } else {
-                                log(LogLevel.WARN, LogType.MSG_IP_UID_CERT_BAD);
-                            }
-                        }
+                    }
 
+                    // do we have a trusted key for this?
+                    if (trustedKeys.indexOfKey(certId) < 0) {
                         unknownCerts += 1;
+                        continue;
+                    }
+
+                    // verify signatures from known private keys
+                    CanonicalizedPublicKey trustedKey = trustedKeys.get(certId);
+
+                    try {
+                        cert.init(trustedKey);
+                        // if it doesn't certify, leave a note and skip
+                        if (!cert.verifySignature(masterKey, rawUserId)) {
+                            log(LogType.MSG_IP_UID_CERT_BAD);
+                            continue;
+                        }
+
+                        log(cert.isRevocation()
+                                        ? LogType.MSG_IP_UID_CERT_GOOD_REVOKE
+                                        : LogType.MSG_IP_UID_CERT_GOOD,
+                                KeyFormattingUtils.convertKeyIdToHexShort(trustedKey.getKeyId())
+                        );
+
+                        // check if there is a previous certificate
+                        WrappedSignature prev = item.trustedCerts.get(cert.getKeyId());
+                        if (prev != null) {
+                            // if it's newer, skip this one
+                            if (prev.getCreationTime().after(cert.getCreationTime())) {
+                                log(LogType.MSG_IP_UID_CERT_OLD);
+                                continue;
+                            }
+                            // if the previous one was a non-revokable certification, no need to look further
+                            if (!prev.isRevocation() && !prev.isRevokable()) {
+                                log(LogType.MSG_IP_UID_CERT_NONREVOKE);
+                                continue;
+                            }
+                            log(LogType.MSG_IP_UID_CERT_NEW);
+                        }
+                        item.trustedCerts.put(cert.getKeyId(), cert);
 
                     } catch (PgpGeneralException e) {
-                        log(LogLevel.WARN, LogType.MSG_IP_UID_CERT_ERROR, new String[]{
-                                PgpKeyHelper.convertKeyIdToHex(cert.getKeyId())
-                        });
+                        log(LogType.MSG_IP_UID_CERT_ERROR,
+                                KeyFormattingUtils.convertKeyIdToHex(cert.getKeyId()));
                     }
+
                 }
 
                 if (unknownCerts > 0) {
-                    log(LogLevel.DEBUG, LogType.MSG_IP_UID_CERTS_UNKNOWN, new String[]{
-                            Integer.toString(unknownCerts)
-                    });
+                    log(LogType.MSG_IP_UID_CERTS_UNKNOWN, unknownCerts);
                 }
                 mIndent -= 1;
 
             }
             mIndent -= 1;
 
-            log(LogLevel.DEBUG, LogType.MSG_IP_UID_REORDER);
+            ArrayList<WrappedUserAttribute> userAttributes = masterKey.getUnorderedUserAttributes();
+            // Don't spam the log if there aren't even any attributes
+            if (!userAttributes.isEmpty()) {
+                log(LogType.MSG_IP_UAT_CLASSIFYING);
+            }
+
+            mIndent += 1;
+            for (WrappedUserAttribute userAttribute : userAttributes) {
+
+                UserPacketItem item = new UserPacketItem();
+                uids.add(item);
+                item.type = userAttribute.getType();
+                item.attributeData = userAttribute.getEncoded();
+
+                int unknownCerts = 0;
+
+                switch (item.type) {
+                    case WrappedUserAttribute.UAT_IMAGE:
+                        log(LogType.MSG_IP_UAT_PROCESSING_IMAGE);
+                        break;
+                    default:
+                        log(LogType.MSG_IP_UAT_PROCESSING_UNKNOWN);
+                        break;
+                }
+                mIndent += 1;
+                // look through signatures for this specific key
+                for (WrappedSignature cert : new IterableIterator<>(
+                        masterKey.getSignaturesForUserAttribute(userAttribute))) {
+                    long certId = cert.getKeyId();
+                    // self signature
+                    if (certId == masterKeyId) {
+
+                        // NOTE self-certificates are already verified during canonicalization,
+                        // AND we know there is at most one cert plus at most one revocation
+                        // AND the revocation only exists if there is no newer certification
+                        if (!cert.isRevocation()) {
+                            item.selfCert = cert;
+                        } else {
+                            item.selfRevocation = cert;
+                            log(LogType.MSG_IP_UAT_REVOKED);
+                        }
+                        continue;
+
+                    }
+
+                    // do we have a trusted key for this?
+                    if (trustedKeys.indexOfKey(certId) < 0) {
+                        unknownCerts += 1;
+                        continue;
+                    }
+
+                    // verify signatures from known private keys
+                    CanonicalizedPublicKey trustedKey = trustedKeys.get(certId);
+
+                    try {
+                        cert.init(trustedKey);
+                        // if it doesn't certify, leave a note and skip
+                        if (!cert.verifySignature(masterKey, userAttribute)) {
+                            log(LogType.MSG_IP_UAT_CERT_BAD);
+                            continue;
+                        }
+
+                        log(cert.isRevocation()
+                                        ? LogType.MSG_IP_UAT_CERT_GOOD_REVOKE
+                                        : LogType.MSG_IP_UAT_CERT_GOOD,
+                                KeyFormattingUtils.convertKeyIdToHexShort(trustedKey.getKeyId())
+                        );
+
+                        // check if there is a previous certificate
+                        WrappedSignature prev = item.trustedCerts.get(cert.getKeyId());
+                        if (prev != null) {
+                            // if it's newer, skip this one
+                            if (prev.getCreationTime().after(cert.getCreationTime())) {
+                                log(LogType.MSG_IP_UAT_CERT_OLD);
+                                continue;
+                            }
+                            // if the previous one was a non-revokable certification, no need to look further
+                            if (!prev.isRevocation() && !prev.isRevokable()) {
+                                log(LogType.MSG_IP_UAT_CERT_NONREVOKE);
+                                continue;
+                            }
+                            log(LogType.MSG_IP_UAT_CERT_NEW);
+                        }
+                        item.trustedCerts.put(cert.getKeyId(), cert);
+
+                    } catch (PgpGeneralException e) {
+                        log(LogType.MSG_IP_UAT_CERT_ERROR,
+                                KeyFormattingUtils.convertKeyIdToHex(cert.getKeyId()));
+                    }
+
+                }
+
+                if (unknownCerts > 0) {
+                    log(LogType.MSG_IP_UAT_CERTS_UNKNOWN, unknownCerts);
+                }
+                mIndent -= 1;
+
+            }
+            mIndent -= 1;
+
+            progress.setProgress(LogType.MSG_IP_UID_REORDER.getMsgId(), 65, 100);
+            log(LogType.MSG_IP_UID_REORDER);
             // primary before regular before revoked (see UserIdItem.compareTo)
             // this is a stable sort, so the order of keys is otherwise preserved.
             Collections.sort(uids);
             // iterate and put into db
             for (int userIdRank = 0; userIdRank < uids.size(); userIdRank++) {
-                UserIdItem item = uids.get(userIdRank);
+                UserPacketItem item = uids.get(userIdRank);
                 operations.add(buildUserIdOperations(masterKeyId, item, userIdRank));
-                if (item.selfCert != null) {
-                    operations.add(buildCertOperations(masterKeyId, userIdRank, item.selfCert,
-                            secretRing != null ? Certs.VERIFIED_SECRET : Certs.VERIFIED_SELF));
-                }
-                // don't bother with trusted certs if the uid is revoked, anyways
-                if (item.isRevoked) {
+
+                if (item.selfRevocation != null) {
+                    operations.add(buildCertOperations(masterKeyId, userIdRank, item.selfRevocation,
+                            Certs.VERIFIED_SELF));
+                    // don't bother with trusted certs if the uid is revoked, anyways
                     continue;
                 }
+
+                if (item.selfCert == null) {
+                    throw new AssertionError("User ids MUST be self-certified at this point!!");
+                }
+
+                operations.add(buildCertOperations(masterKeyId, userIdRank, item.selfCert,
+                        selfCertsAreTrusted ? Certs.VERIFIED_SECRET : Certs.VERIFIED_SELF));
+
+                // iterate over signatures
                 for (int i = 0; i < item.trustedCerts.size(); i++) {
+                    WrappedSignature sig = item.trustedCerts.valueAt(i);
+                    // if it's a revocation
+                    if (sig.isRevocation()) {
+                        // don't further process it
+                        continue;
+                    }
+                    // otherwise, build database operation
                     operations.add(buildCertOperations(
-                            masterKeyId, userIdRank, item.trustedCerts.get(i), Certs.VERIFIED_SECRET));
+                            masterKeyId, userIdRank, sig, Certs.VERIFIED_SECRET));
                 }
             }
 
-            log(LogLevel.DEBUG, LogType.MSG_IP_PREPARE_SUCCESS);
-            mIndent -= 1;
-
         } catch (IOException e) {
-            log(LogLevel.ERROR, LogType.MSG_IP_FAIL_IO_EXC);
+            log(LogType.MSG_IP_ERROR_IO_EXC);
             Log.e(Constants.TAG, "IOException during import", e);
+            return SaveKeyringResult.RESULT_ERROR;
+        } finally {
             mIndent -= 1;
-            return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog);
         }
+
+        // before deleting key, retrieve it's last updated time
+        final int INDEX_MASTER_KEY_ID = 0;
+        final int INDEX_LAST_UPDATED = 1;
+        Cursor lastUpdatedCursor = mContentResolver.query(
+                UpdatedKeys.CONTENT_URI,
+                new String[]{
+                        UpdatedKeys.MASTER_KEY_ID,
+                        UpdatedKeys.LAST_UPDATED
+                },
+                UpdatedKeys.MASTER_KEY_ID + " = ?",
+                new String[]{"" + masterKeyId},
+                null
+        );
+        if (lastUpdatedCursor.moveToNext()) {
+            // there was an entry to re-insert
+            // this operation must happen after the new key is inserted
+            ContentValues lastUpdatedEntry = new ContentValues(2);
+            lastUpdatedEntry.put(UpdatedKeys.MASTER_KEY_ID,
+                    lastUpdatedCursor.getLong(INDEX_MASTER_KEY_ID));
+            lastUpdatedEntry.put(UpdatedKeys.LAST_UPDATED,
+                    lastUpdatedCursor.getLong(INDEX_LAST_UPDATED));
+            operations.add(
+                    ContentProviderOperation
+                            .newInsert(UpdatedKeys.CONTENT_URI)
+                            .withValues(lastUpdatedEntry)
+                            .build()
+            );
+        }
+        lastUpdatedCursor.close();
 
         try {
             // delete old version of this keyRing, which also deletes all keys and userIds on cascade
             int deleted = mContentResolver.delete(
-                    KeyRingData.buildPublicKeyRingUri(Long.toString(masterKeyId)), null, null);
+                    KeyRingData.buildPublicKeyRingUri(masterKeyId), null, null);
             if (deleted > 0) {
-                log(LogLevel.DEBUG, LogType.MSG_IP_DELETE_OLD_OK);
+                log(LogType.MSG_IP_DELETE_OLD_OK);
                 result |= SaveKeyringResult.UPDATED;
             } else {
-                log(LogLevel.DEBUG, LogType.MSG_IP_DELETE_OLD_FAIL);
+                log(LogType.MSG_IP_DELETE_OLD_FAIL);
             }
 
-            log(LogLevel.DEBUG, LogType.MSG_IP_APPLY_BATCH);
+            log(LogType.MSG_IP_APPLY_BATCH);
+            progress.setProgress(LogType.MSG_IP_APPLY_BATCH.getMsgId(), 75, 100);
             mContentResolver.applyBatch(KeychainContract.CONTENT_AUTHORITY, operations);
 
-            // Save the saved keyring (if any)
-            if (secretRing != null) {
-                log(LogLevel.DEBUG, LogType.MSG_IP_REINSERT_SECRET);
-                mIndent += 1;
-                saveSecretKeyRing(secretRing);
-                result |= SaveKeyringResult.SAVED_SECRET;
-                mIndent -= 1;
-            }
-
-            mIndent -= 1;
-            log(LogLevel.OK, LogType.MSG_IP_SUCCESS);
-            return new SaveKeyringResult(result, mLog);
+            log(LogType.MSG_IP_SUCCESS);
+            progress.setProgress(LogType.MSG_IP_SUCCESS.getMsgId(), 90, 100);
+            return result;
 
         } catch (RemoteException e) {
-            log(LogLevel.ERROR, LogType.MSG_IP_FAIL_REMOTE_EX);
+            log(LogType.MSG_IP_ERROR_REMOTE_EX);
             Log.e(Constants.TAG, "RemoteException during import", e);
-            mIndent -= 1;
-            return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog);
+            return SaveKeyringResult.RESULT_ERROR;
         } catch (OperationApplicationException e) {
-            log(LogLevel.ERROR, LogType.MSG_IP_FAIL_OP_EX);
+            log(LogType.MSG_IP_ERROR_OP_EXC);
             Log.e(Constants.TAG, "OperationApplicationException during import", e);
-            mIndent -= 1;
-            return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog);
+            return SaveKeyringResult.RESULT_ERROR;
         }
 
     }
 
-    private static class UserIdItem implements Comparable<UserIdItem> {
+    private static class UserPacketItem implements Comparable<UserPacketItem> {
+        Integer type;
         String userId;
+        String name;
+        String email;
+        String comment;
+        byte[] attributeData;
         boolean isPrimary = false;
-        boolean isRevoked = false;
         WrappedSignature selfCert;
-        List<WrappedSignature> trustedCerts = new ArrayList<WrappedSignature>();
+        WrappedSignature selfRevocation;
+        LongSparseArray<WrappedSignature> trustedCerts = new LongSparseArray<>();
 
         @Override
-        public int compareTo(UserIdItem o) {
+        public int compareTo(@NonNull UserPacketItem o) {
+            // revoked keys always come last!
+            //noinspection DoubleNegation
+            if ((selfRevocation != null) != (o.selfRevocation != null)) {
+                return selfRevocation != null ? 1 : -1;
+            }
+            // if one is a user id, but the other isn't, the user id always comes first.
+            // we compare for null values here, so != is the correct operator!
+            // noinspection NumberEquality
+            if (type != o.type) {
+                return type == null ? -1 : 1;
+            }
+            // if one is *trusted* but the other isn't, that one comes first
+            // this overrides the primary attribute, even!
+            if ( (trustedCerts.size() == 0) != (o.trustedCerts.size() == 0) ) {
+                return trustedCerts.size() > o.trustedCerts.size() ? -1 : 1;
+            }
             // if one key is primary but the other isn't, the primary one always comes first
             if (isPrimary != o.isPrimary) {
                 return isPrimary ? -1 : 1;
-            }
-            // revoked keys always come last!
-            if (isRevoked != o.isRevoked) {
-                return isRevoked ? 1 : -1;
             }
             return 0;
         }
     }
 
     /**
-     * Saves a PGPSecretKeyRing in the DB. This will only work if a corresponding public keyring
-     * is already in the database!
-     *
-     * TODO allow adding secret keys where no public key exists (ie, consolidate keys)
+     * Saves an UncachedKeyRing of the secret variant into the db.
+     * This method will fail if no corresponding public keyring is in the database!
      */
-    public SaveKeyringResult saveSecretKeyRing(UncachedKeyRing keyRing) {
-
-        if (!keyRing.isSecret()) {
-            log(LogLevel.ERROR, LogType.MSG_IS_BAD_TYPE_PUBLIC);
-            return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog);
-        }
+    private int saveCanonicalizedSecretKeyRing(CanonicalizedSecretKeyRing keyRing) {
 
         long masterKeyId = keyRing.getMasterKeyId();
-        log(LogLevel.START, LogType.MSG_IS,
-                new String[]{ PgpKeyHelper.convertKeyIdToHex(masterKeyId) });
+        log(LogType.MSG_IS, KeyFormattingUtils.convertKeyIdToHex(masterKeyId));
         mIndent += 1;
 
-        // IF this is successful, it's a secret key
-        int result = SaveKeyringResult.SAVED_SECRET;
-
-        // save secret keyring
         try {
-            ContentValues values = new ContentValues();
-            values.put(KeyRingData.MASTER_KEY_ID, masterKeyId);
-            values.put(KeyRingData.KEY_RING_DATA, keyRing.getEncoded());
-            // insert new version of this keyRing
-            Uri uri = KeyRingData.buildSecretKeyRingUri(Long.toString(masterKeyId));
-            mContentResolver.insert(uri, values);
-        } catch (IOException e) {
-            Log.e(Constants.TAG, "Failed to encode key!", e);
-            log(LogLevel.ERROR, LogType.MSG_IS_IO_EXCPTION);
-            return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog);
-        }
 
-        {
-            Uri uri = Keys.buildKeysUri(Long.toString(masterKeyId));
+            // IF this is successful, it's a secret key
+            int result = SaveKeyringResult.SAVED_SECRET;
 
-            // first, mark all keys as not available
-            ContentValues values = new ContentValues();
-            values.put(Keys.HAS_SECRET, 0);
-            mContentResolver.update(uri, values, null, null);
-
-            values.put(Keys.HAS_SECRET, 1);
-            // then, mark exactly the keys we have available
-            log(LogLevel.INFO, LogType.MSG_IS_IMPORTING_SUBKEYS);
-            mIndent += 1;
-            Set<Long> available = keyRing.getAvailableSubkeys();
-            for (UncachedPublicKey sub :
-                    new IterableIterator<UncachedPublicKey>(keyRing.getPublicKeys())) {
-                long id = sub.getKeyId();
-                if(available.contains(id)) {
-                    int upd = mContentResolver.update(uri, values, Keys.KEY_ID + " = ?",
-                            new String[] { Long.toString(id) });
-                    if (upd == 1) {
-                        log(LogLevel.DEBUG, LogType.MSG_IS_SUBKEY_OK, new String[]{
-                                PgpKeyHelper.convertKeyIdToHex(id)
-                        });
-                    } else {
-                        log(LogLevel.WARN, LogType.MSG_IS_SUBKEY_NONEXISTENT, new String[]{
-                                PgpKeyHelper.convertKeyIdToHex(id)
-                        });
-                    }
-                } else {
-                    log(LogLevel.INFO, LogType.MSG_IS_SUBKEY_STRIPPED, new String[]{
-                            PgpKeyHelper.convertKeyIdToHex(id)
-                    });
+            // save secret keyring
+            try {
+                ContentValues values = new ContentValues();
+                values.put(KeyRingData.MASTER_KEY_ID, masterKeyId);
+                values.put(KeyRingData.KEY_RING_DATA, keyRing.getEncoded());
+                // insert new version of this keyRing
+                Uri uri = KeyRingData.buildSecretKeyRingUri(masterKeyId);
+                if (mContentResolver.insert(uri, values) == null) {
+                    log(LogType.MSG_IS_DB_EXCEPTION);
+                    return SaveKeyringResult.RESULT_ERROR;
                 }
+            } catch (IOException e) {
+                Log.e(Constants.TAG, "Failed to encode key!", e);
+                log(LogType.MSG_IS_ERROR_IO_EXC);
+                return SaveKeyringResult.RESULT_ERROR;
             }
+
+            {
+                Uri uri = Keys.buildKeysUri(masterKeyId);
+
+                // first, mark all keys as not available
+                ContentValues values = new ContentValues();
+                values.put(Keys.HAS_SECRET, SecretKeyType.GNU_DUMMY.getNum());
+                mContentResolver.update(uri, values, null, null);
+
+                // then, mark exactly the keys we have available
+                log(LogType.MSG_IS_IMPORTING_SUBKEYS);
+                mIndent += 1;
+                for (CanonicalizedSecretKey sub : keyRing.secretKeyIterator()) {
+                    long id = sub.getKeyId();
+                    SecretKeyType mode = sub.getSecretKeyTypeSuperExpensive();
+                    values.put(Keys.HAS_SECRET, mode.getNum());
+                    int upd = mContentResolver.update(uri, values, Keys.KEY_ID + " = ?",
+                            new String[]{Long.toString(id)});
+                    if (upd == 1) {
+                        switch (mode) {
+                            case PASSPHRASE:
+                                log(LogType.MSG_IS_SUBKEY_OK,
+                                        KeyFormattingUtils.convertKeyIdToHex(id)
+                                );
+                                break;
+                            case PASSPHRASE_EMPTY:
+                                log(LogType.MSG_IS_SUBKEY_EMPTY,
+                                        KeyFormattingUtils.convertKeyIdToHex(id)
+                                );
+                                break;
+                            case PIN:
+                                log(LogType.MSG_IS_SUBKEY_PIN,
+                                        KeyFormattingUtils.convertKeyIdToHex(id)
+                                );
+                                break;
+                            case GNU_DUMMY:
+                                log(LogType.MSG_IS_SUBKEY_STRIPPED,
+                                        KeyFormattingUtils.convertKeyIdToHex(id)
+                                );
+                                break;
+                            case DIVERT_TO_CARD:
+                                log(LogType.MSG_IS_SUBKEY_DIVERT,
+                                        KeyFormattingUtils.convertKeyIdToHex(id)
+                                );
+                                break;
+                        }
+                    } else {
+                        log(LogType.MSG_IS_SUBKEY_NONEXISTENT,
+                                KeyFormattingUtils.convertKeyIdToHex(id)
+                        );
+                    }
+                }
+                mIndent -= 1;
+
+                // this implicitly leaves all keys which were not in the secret key ring
+                // with has_secret = 1
+            }
+
+            log(LogType.MSG_IS_SUCCESS);
+            return result;
+
+        } finally {
             mIndent -= 1;
-
-            // this implicitly leaves all keys which were not in the secret key ring
-            // with has_secret = 0
         }
-
-        log(LogLevel.OK, LogType.MSG_IS_SUCCESS);
-        return new SaveKeyringResult(result, mLog);
 
     }
 
+    public SaveKeyringResult savePublicKeyRing(UncachedKeyRing keyRing) {
+        return savePublicKeyRing(keyRing, new ProgressScaler(), null);
+    }
+
     /**
-     * Saves (or updates) a pair of public and secret KeyRings in the database
+     * Save a public keyring into the database.
+     * <p/>
+     * This is a high level method, which takes care of merging all new information into the old and
+     * keep public and secret keyrings in sync.
      */
-    public void saveKeyRing(UncachedKeyRing pubRing, UncachedKeyRing secRing) throws IOException {
-        long masterKeyId = pubRing.getPublicKey().getKeyId();
+    public SaveKeyringResult savePublicKeyRing(UncachedKeyRing publicRing, Progressable progress, String expectedFingerprint) {
 
-        // delete secret keyring (so it isn't unnecessarily saved by public-savePublicKeyRing below)
-        mContentResolver.delete(KeyRingData.buildSecretKeyRingUri(Long.toString(masterKeyId)), null, null);
+        try {
+            long masterKeyId = publicRing.getMasterKeyId();
+            log(LogType.MSG_IP, KeyFormattingUtils.convertKeyIdToHex(masterKeyId));
+            mIndent += 1;
 
-        // save public keyring
-        savePublicKeyRing(pubRing);
-        saveSecretKeyRing(secRing);
+            if (publicRing.isSecret()) {
+                log(LogType.MSG_IP_BAD_TYPE_SECRET);
+                return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+            }
+
+            CanonicalizedPublicKeyRing canPublicRing;
+
+            // If there is an old keyring, merge it
+            try {
+                UncachedKeyRing oldPublicRing = getCanonicalizedPublicKeyRing(masterKeyId).getUncachedKeyRing();
+
+                // Merge data from new public ring into the old one
+                log(LogType.MSG_IP_MERGE_PUBLIC);
+                publicRing = oldPublicRing.merge(publicRing, mLog, mIndent);
+
+                // If this is null, there is an error in the log so we can just return
+                if (publicRing == null) {
+                    return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+                }
+
+                // Canonicalize this keyring, to assert a number of assumptions made about it.
+                canPublicRing = (CanonicalizedPublicKeyRing) publicRing.canonicalize(mLog, mIndent);
+                if (canPublicRing == null) {
+                    return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+                }
+
+                // Early breakout if nothing changed
+                if (Arrays.hashCode(publicRing.getEncoded())
+                        == Arrays.hashCode(oldPublicRing.getEncoded())) {
+                    log(LogType.MSG_IP_SUCCESS_IDENTICAL);
+                    return new SaveKeyringResult(SaveKeyringResult.UPDATED, mLog, null);
+                }
+            } catch (NotFoundException e) {
+                // Not an issue, just means we are dealing with a new keyring.
+
+                // Canonicalize this keyring, to assert a number of assumptions made about it.
+                canPublicRing = (CanonicalizedPublicKeyRing) publicRing.canonicalize(mLog, mIndent);
+                if (canPublicRing == null) {
+                    return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+                }
+
+            }
+
+            // If there is a secret key, merge new data (if any) and save the key for later
+            CanonicalizedSecretKeyRing canSecretRing;
+            try {
+                UncachedKeyRing secretRing = getCanonicalizedSecretKeyRing(publicRing.getMasterKeyId())
+                        .getUncachedKeyRing();
+
+                // Merge data from new public ring into secret one
+                log(LogType.MSG_IP_MERGE_SECRET);
+                secretRing = secretRing.merge(publicRing, mLog, mIndent);
+                if (secretRing == null) {
+                    return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+                }
+                // This has always been a secret key ring, this is a safe cast
+                canSecretRing = (CanonicalizedSecretKeyRing) secretRing.canonicalize(mLog, mIndent);
+                if (canSecretRing == null) {
+                    return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+                }
+
+            } catch (NotFoundException e) {
+                // No secret key available (this is what happens most of the time)
+                canSecretRing = null;
+            }
+
+
+            // If we have an expected fingerprint, make sure it matches
+            if (expectedFingerprint != null) {
+                if (!canPublicRing.containsBoundSubkey(expectedFingerprint)) {
+                    log(LogType.MSG_IP_FINGERPRINT_ERROR);
+                    return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+                } else {
+                    log(LogType.MSG_IP_FINGERPRINT_OK);
+                }
+            }
+
+            int result = saveCanonicalizedPublicKeyRing(canPublicRing, progress, canSecretRing != null);
+
+            // Save the saved keyring (if any)
+            if (canSecretRing != null) {
+                progress.setProgress(LogType.MSG_IP_REINSERT_SECRET.getMsgId(), 90, 100);
+                int secretResult = saveCanonicalizedSecretKeyRing(canSecretRing);
+                if ((secretResult & SaveKeyringResult.RESULT_ERROR) != SaveKeyringResult.RESULT_ERROR) {
+                    result |= SaveKeyringResult.SAVED_SECRET;
+                }
+            }
+
+            return new SaveKeyringResult(result, mLog, canSecretRing);
+
+        } catch (IOException e) {
+            log(LogType.MSG_IP_ERROR_IO_EXC);
+            return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+        } finally {
+            mIndent -= 1;
+        }
+
+    }
+
+    public SaveKeyringResult saveSecretKeyRing(UncachedKeyRing secretRing, Progressable progress) {
+
+        try {
+            long masterKeyId = secretRing.getMasterKeyId();
+            log(LogType.MSG_IS, KeyFormattingUtils.convertKeyIdToHex(masterKeyId));
+            mIndent += 1;
+
+            if (!secretRing.isSecret()) {
+                log(LogType.MSG_IS_BAD_TYPE_PUBLIC);
+                return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+            }
+
+            CanonicalizedSecretKeyRing canSecretRing;
+
+            // If there is an old secret key, merge it.
+            try {
+                UncachedKeyRing oldSecretRing = getCanonicalizedSecretKeyRing(masterKeyId).getUncachedKeyRing();
+
+                // Merge data from new secret ring into old one
+                log(LogType.MSG_IS_MERGE_SECRET);
+                secretRing = secretRing.merge(oldSecretRing, mLog, mIndent);
+
+                // If this is null, there is an error in the log so we can just return
+                if (secretRing == null) {
+                    return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+                }
+
+                // Canonicalize this keyring, to assert a number of assumptions made about it.
+                // This is a safe cast, because we made sure this is a secret ring above
+                canSecretRing = (CanonicalizedSecretKeyRing) secretRing.canonicalize(mLog, mIndent);
+                if (canSecretRing == null) {
+                    return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+                }
+
+                // Early breakout if nothing changed
+                if (Arrays.hashCode(secretRing.getEncoded())
+                        == Arrays.hashCode(oldSecretRing.getEncoded())) {
+                    log(LogType.MSG_IS_SUCCESS_IDENTICAL,
+                            KeyFormattingUtils.convertKeyIdToHex(masterKeyId));
+                    return new SaveKeyringResult(SaveKeyringResult.UPDATED, mLog, null);
+                }
+            } catch (NotFoundException e) {
+                // Not an issue, just means we are dealing with a new keyring
+
+                // Canonicalize this keyring, to assert a number of assumptions made about it.
+                // This is a safe cast, because we made sure this is a secret ring above
+                canSecretRing = (CanonicalizedSecretKeyRing) secretRing.canonicalize(mLog, mIndent);
+                if (canSecretRing == null) {
+
+                    // Special case: If keyring canonicalization failed, try again after adding
+                    // all self-certificates from the public key.
+                    try {
+                        log(LogType.MSG_IS_MERGE_SPECIAL);
+                        UncachedKeyRing oldPublicRing = getCanonicalizedPublicKeyRing(masterKeyId).getUncachedKeyRing();
+                        secretRing = secretRing.merge(oldPublicRing, mLog, mIndent);
+                        canSecretRing = (CanonicalizedSecretKeyRing) secretRing.canonicalize(mLog, mIndent);
+                    } catch (NotFoundException e2) {
+                        // nothing, this is handled right in the next line
+                    }
+
+                    if (canSecretRing == null) {
+                        return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+                    }
+                }
+
+            }
+
+            // Merge new data into public keyring as well, if there is any
+            UncachedKeyRing publicRing;
+            try {
+                UncachedKeyRing oldPublicRing = getCanonicalizedPublicKeyRing(masterKeyId).getUncachedKeyRing();
+
+                // Merge data from new secret ring into public one
+                log(LogType.MSG_IS_MERGE_PUBLIC);
+                publicRing = oldPublicRing.merge(secretRing, mLog, mIndent);
+                if (publicRing == null) {
+                    return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+                }
+
+            } catch (NotFoundException e) {
+                log(LogType.MSG_IS_PUBRING_GENERATE);
+                publicRing = secretRing.extractPublicKeyRing();
+            }
+
+            CanonicalizedPublicKeyRing canPublicRing = (CanonicalizedPublicKeyRing) publicRing.canonicalize(mLog,
+                    mIndent);
+            if (canPublicRing == null) {
+                return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+            }
+
+            int result;
+
+            result = saveCanonicalizedPublicKeyRing(canPublicRing, progress, true);
+            if ((result & SaveKeyringResult.RESULT_ERROR) == SaveKeyringResult.RESULT_ERROR) {
+                return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+            }
+
+            progress.setProgress(LogType.MSG_IP_REINSERT_SECRET.getMsgId(), 90, 100);
+            result = saveCanonicalizedSecretKeyRing(canSecretRing);
+
+            return new SaveKeyringResult(result, mLog, canSecretRing);
+
+        } catch (IOException e) {
+            log(LogType.MSG_IS_ERROR_IO_EXC);
+            return new SaveKeyringResult(SaveKeyringResult.RESULT_ERROR, mLog, null);
+        } finally {
+            mIndent -= 1;
+        }
+
+    }
+
+    @NonNull
+    public ConsolidateResult consolidateDatabaseStep1(Progressable progress) {
+
+        OperationLog log = new OperationLog();
+        int indent = 0;
+
+        // 1a. fetch all secret keyrings into a cache file
+        log.add(LogType.MSG_CON, indent);
+        indent += 1;
+
+        if (mConsolidateCritical) {
+            log.add(LogType.MSG_CON_RECURSIVE, indent);
+            return new ConsolidateResult(ConsolidateResult.RESULT_OK, log);
+        }
+
+        progress.setProgress(R.string.progress_con_saving, 0, 100);
+
+        // The consolidate operation can never be cancelled!
+        progress.setPreventCancel();
+
+        try {
+
+            log.add(LogType.MSG_CON_SAVE_SECRET, indent);
+            indent += 1;
+
+            final Cursor cursor = mContentResolver.query(KeyRingData.buildSecretKeyRingUri(),
+                    new String[]{KeyRingData.KEY_RING_DATA}, null, null, null);
+
+            if (cursor == null) {
+                log.add(LogType.MSG_CON_ERROR_DB, indent);
+                return new ConsolidateResult(ConsolidateResult.RESULT_ERROR, log);
+            }
+
+            // No keys existing might be a legitimate option, we write an empty file in that case
+            cursor.moveToFirst();
+            ParcelableFileCache<ParcelableKeyRing> cache =
+                    new ParcelableFileCache<>(mContext, "consolidate_secret.pcl");
+            cache.writeCache(cursor.getCount(), new Iterator<ParcelableKeyRing>() {
+                ParcelableKeyRing ring;
+
+                @Override
+                public boolean hasNext() {
+                    if (ring != null) {
+                        return true;
+                    }
+                    if (cursor.isAfterLast()) {
+                        return false;
+                    }
+                    ring = new ParcelableKeyRing(cursor.getBlob(0));
+                    cursor.moveToNext();
+                    return true;
+                }
+
+                @Override
+                public ParcelableKeyRing next() {
+                    try {
+                        return ring;
+                    } finally {
+                        ring = null;
+                    }
+                }
+
+                @Override
+                public void remove() {
+                    throw new UnsupportedOperationException();
+                }
+
+            });
+            cursor.close();
+
+        } catch (IOException e) {
+            Log.e(Constants.TAG, "error saving secret", e);
+            log.add(LogType.MSG_CON_ERROR_IO_SECRET, indent);
+            return new ConsolidateResult(ConsolidateResult.RESULT_ERROR, log);
+        } finally {
+            indent -= 1;
+        }
+
+        progress.setProgress(R.string.progress_con_saving, 3, 100);
+
+        // 1b. fetch all public keyrings into a cache file
+        try {
+
+            log.add(LogType.MSG_CON_SAVE_PUBLIC, indent);
+            indent += 1;
+
+            final Cursor cursor = mContentResolver.query(
+                    KeyRingData.buildPublicKeyRingUri(),
+                    new String[]{KeyRingData.KEY_RING_DATA}, null, null, null);
+
+            if (cursor == null) {
+                log.add(LogType.MSG_CON_ERROR_DB, indent);
+                return new ConsolidateResult(ConsolidateResult.RESULT_ERROR, log);
+            }
+
+            // No keys existing might be a legitimate option, we write an empty file in that case
+            cursor.moveToFirst();
+            ParcelableFileCache<ParcelableKeyRing> cache =
+                    new ParcelableFileCache<>(mContext, "consolidate_public.pcl");
+            cache.writeCache(cursor.getCount(), new Iterator<ParcelableKeyRing>() {
+                ParcelableKeyRing ring;
+
+                @Override
+                public boolean hasNext() {
+                    if (ring != null) {
+                        return true;
+                    }
+                    if (cursor.isAfterLast()) {
+                        return false;
+                    }
+                    ring = new ParcelableKeyRing(cursor.getBlob(0));
+                    cursor.moveToNext();
+                    return true;
+                }
+
+                @Override
+                public ParcelableKeyRing next() {
+                    try {
+                        return ring;
+                    } finally {
+                        ring = null;
+                    }
+                }
+
+                @Override
+                public void remove() {
+                    throw new UnsupportedOperationException();
+                }
+
+            });
+            cursor.close();
+
+        } catch (IOException e) {
+            Log.e(Constants.TAG, "error saving public", e);
+            log.add(LogType.MSG_CON_ERROR_IO_PUBLIC, indent);
+            return new ConsolidateResult(ConsolidateResult.RESULT_ERROR, log);
+        } finally {
+            indent -= 1;
+        }
+
+        log.add(LogType.MSG_CON_CRITICAL_IN, indent);
+        Preferences.getPreferences(mContext).setCachedConsolidate(true);
+
+        return consolidateDatabaseStep2(log, indent, progress, false);
+    }
+
+    @NonNull
+    public ConsolidateResult consolidateDatabaseStep2(Progressable progress) {
+        return consolidateDatabaseStep2(new OperationLog(), 0, progress, true);
+    }
+
+    private static boolean mConsolidateCritical = false;
+
+    @NonNull
+    private ConsolidateResult consolidateDatabaseStep2(
+            OperationLog log, int indent, Progressable progress, boolean recovery) {
+
+        synchronized (ProviderHelper.class) {
+            if (mConsolidateCritical) {
+                log.add(LogType.MSG_CON_ERROR_CONCURRENT, indent);
+                return new ConsolidateResult(ConsolidateResult.RESULT_ERROR, log);
+            }
+            mConsolidateCritical = true;
+        }
+
+        try {
+            Preferences prefs = Preferences.getPreferences(mContext);
+
+            if (recovery) {
+                log.add(LogType.MSG_CON_RECOVER, indent);
+                indent += 1;
+            }
+
+            if (!prefs.getCachedConsolidate()) {
+                log.add(LogType.MSG_CON_ERROR_BAD_STATE, indent);
+                return new ConsolidateResult(ConsolidateResult.RESULT_ERROR, log);
+            }
+
+            // 2. wipe database (IT'S DANGEROUS)
+
+            // first, backup our list of updated key times
+            ArrayList<ContentValues> updatedKeysValues = new ArrayList<>();
+            final int INDEX_MASTER_KEY_ID = 0;
+            final int INDEX_LAST_UPDATED = 1;
+            Cursor lastUpdatedCursor = mContentResolver.query(
+                    UpdatedKeys.CONTENT_URI,
+                    new String[]{
+                            UpdatedKeys.MASTER_KEY_ID,
+                            UpdatedKeys.LAST_UPDATED
+                    },
+                    null, null, null);
+            while (lastUpdatedCursor.moveToNext()) {
+                ContentValues values = new ContentValues();
+                values.put(UpdatedKeys.MASTER_KEY_ID,
+                        lastUpdatedCursor.getLong(INDEX_MASTER_KEY_ID));
+                values.put(UpdatedKeys.LAST_UPDATED,
+                        lastUpdatedCursor.getLong(INDEX_LAST_UPDATED));
+                updatedKeysValues.add(values);
+            }
+            lastUpdatedCursor.close();
+
+            log.add(LogType.MSG_CON_DB_CLEAR, indent);
+            mContentResolver.delete(KeyRings.buildUnifiedKeyRingsUri(), null, null);
+
+            ParcelableFileCache<ParcelableKeyRing> cacheSecret, cachePublic;
+
+            // Set flag that we have a cached consolidation here
+            try {
+                cacheSecret = new ParcelableFileCache<>(mContext, "consolidate_secret.pcl");
+                IteratorWithSize<ParcelableKeyRing> itSecrets = cacheSecret.readCache(false);
+                int numSecrets = itSecrets.getSize();
+
+                log.add(LogType.MSG_CON_REIMPORT_SECRET, indent, numSecrets);
+                indent += 1;
+
+                // 3. Re-Import secret keyrings from cache
+                if (numSecrets > 0) {
+
+                    ImportKeyResult result = new ImportOperation(mContext, this,
+                            new ProgressFixedScaler(progress, 10, 25, 100, R.string.progress_con_reimport))
+                            .serialKeyRingImport(itSecrets, numSecrets, null, null);
+                    log.add(result, indent);
+                } else {
+                    log.add(LogType.MSG_CON_REIMPORT_SECRET_SKIP, indent);
+                }
+
+            } catch (IOException e) {
+                Log.e(Constants.TAG, "error importing secret", e);
+                log.add(LogType.MSG_CON_ERROR_SECRET, indent);
+                return new ConsolidateResult(ConsolidateResult.RESULT_ERROR, log);
+            } finally {
+                indent -= 1;
+            }
+
+            try {
+
+                cachePublic = new ParcelableFileCache<>(mContext, "consolidate_public.pcl");
+                IteratorWithSize<ParcelableKeyRing> itPublics = cachePublic.readCache();
+                int numPublics = itPublics.getSize();
+
+                log.add(LogType.MSG_CON_REIMPORT_PUBLIC, indent, numPublics);
+                indent += 1;
+
+                // 4. Re-Import public keyrings from cache
+                if (numPublics > 0) {
+
+                    ImportKeyResult result = new ImportOperation(mContext, this,
+                            new ProgressFixedScaler(progress, 25, 99, 100, R.string.progress_con_reimport))
+                            .serialKeyRingImport(itPublics, numPublics, null, null);
+                    log.add(result, indent);
+                    // re-insert our backed up list of updated key times
+                    // TODO: can this cause issues in case a public key re-import failed?
+                    mContentResolver.bulkInsert(UpdatedKeys.CONTENT_URI,
+                            updatedKeysValues.toArray(new ContentValues[updatedKeysValues.size()]));
+                } else {
+                    log.add(LogType.MSG_CON_REIMPORT_PUBLIC_SKIP, indent);
+                }
+
+            } catch (IOException e) {
+                Log.e(Constants.TAG, "error importing public", e);
+                log.add(LogType.MSG_CON_ERROR_PUBLIC, indent);
+                return new ConsolidateResult(ConsolidateResult.RESULT_ERROR, log);
+            } finally {
+                indent -= 1;
+            }
+
+            log.add(LogType.MSG_CON_CRITICAL_OUT, indent);
+            Preferences.getPreferences(mContext).setCachedConsolidate(false);
+
+            // 5. Delete caches
+            try {
+                log.add(LogType.MSG_CON_DELETE_SECRET, indent);
+                indent += 1;
+                cacheSecret.delete();
+            } catch (IOException e) {
+                // doesn't /really/ matter
+                Log.e(Constants.TAG, "IOException during delete of secret cache", e);
+                log.add(LogType.MSG_CON_WARN_DELETE_SECRET, indent);
+            } finally {
+                indent -= 1;
+            }
+
+            try {
+                log.add(LogType.MSG_CON_DELETE_PUBLIC, indent);
+                indent += 1;
+                cachePublic.delete();
+            } catch (IOException e) {
+                // doesn't /really/ matter
+                Log.e(Constants.TAG, "IOException during deletion of public cache", e);
+                log.add(LogType.MSG_CON_WARN_DELETE_PUBLIC, indent);
+            } finally {
+                indent -= 1;
+            }
+
+            progress.setProgress(100, 100);
+            log.add(LogType.MSG_CON_SUCCESS, indent);
+
+            return new ConsolidateResult(ConsolidateResult.RESULT_OK, log);
+
+        } finally {
+            mConsolidateCritical = false;
+        }
+
     }
 
     /**
@@ -660,7 +1428,7 @@ public class ProviderHelper {
         values.put(Certs.VERIFIED, verified);
         values.put(Certs.DATA, cert.getEncoded());
 
-        Uri uri = Certs.buildCertsUri(Long.toString(masterKeyId));
+        Uri uri = Certs.buildCertsUri(masterKeyId);
 
         return ContentProviderOperation.newInsert(uri).withValues(values).build();
     }
@@ -669,15 +1437,20 @@ public class ProviderHelper {
      * Build ContentProviderOperation to add PublicUserIds to database corresponding to a keyRing
      */
     private ContentProviderOperation
-    buildUserIdOperations(long masterKeyId, UserIdItem item, int rank) {
+    buildUserIdOperations(long masterKeyId, UserPacketItem item, int rank) {
         ContentValues values = new ContentValues();
-        values.put(UserIds.MASTER_KEY_ID, masterKeyId);
-        values.put(UserIds.USER_ID, item.userId);
-        values.put(UserIds.IS_PRIMARY, item.isPrimary);
-        values.put(UserIds.IS_REVOKED, item.isRevoked);
-        values.put(UserIds.RANK, rank);
+        values.put(UserPackets.MASTER_KEY_ID, masterKeyId);
+        values.put(UserPackets.TYPE, item.type);
+        values.put(UserPackets.USER_ID, item.userId);
+        values.put(UserPackets.NAME, item.name);
+        values.put(UserPackets.EMAIL, item.email);
+        values.put(UserPackets.COMMENT, item.comment);
+        values.put(UserPackets.ATTRIBUTE_DATA, item.attributeData);
+        values.put(UserPackets.IS_PRIMARY, item.isPrimary);
+        values.put(UserPackets.IS_REVOKED, item.selfRevocation != null);
+        values.put(UserPackets.RANK, rank);
 
-        Uri uri = UserIds.buildUserIdsUri(Long.toString(masterKeyId));
+        Uri uri = UserPackets.buildUserIdsUri(masterKeyId);
 
         return ContentProviderOperation.newInsert(uri).withValues(values).build();
     }
@@ -686,7 +1459,7 @@ public class ProviderHelper {
         UncachedKeyRing keyRing = UncachedKeyRing.decodeFromData(data);
 
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        keyRing.encodeArmored(bos, PgpHelper.getFullVersion(mContext));
+        keyRing.encodeArmored(bos, null);
         String armoredKey = bos.toString("UTF-8");
 
         Log.d(Constants.TAG, "armoredKey:" + armoredKey);
@@ -701,154 +1474,15 @@ public class ProviderHelper {
         return getKeyRingAsArmoredString(data);
     }
 
-    public ArrayList<String> getRegisteredApiApps() {
-        Cursor cursor = mContentResolver.query(ApiApps.CONTENT_URI, null, null, null, null);
-
-        ArrayList<String> packageNames = new ArrayList<String>();
-        try {
-            if (cursor != null) {
-                int packageNameCol = cursor.getColumnIndex(ApiApps.PACKAGE_NAME);
-                if (cursor.moveToFirst()) {
-                    do {
-                        packageNames.add(cursor.getString(packageNameCol));
-                    } while (cursor.moveToNext());
-                }
-            }
-        } finally {
-            if (cursor != null) {
-                cursor.close();
-            }
-        }
-
-        return packageNames;
-    }
-
-    private ContentValues contentValueForApiApps(AppSettings appSettings) {
+    public Uri renewKeyLastUpdatedTime(long masterKeyId, long time, TimeUnit timeUnit) {
         ContentValues values = new ContentValues();
-        values.put(ApiApps.PACKAGE_NAME, appSettings.getPackageName());
-        values.put(ApiApps.PACKAGE_SIGNATURE, appSettings.getPackageSignature());
-        return values;
+        values.put(UpdatedKeys.MASTER_KEY_ID, masterKeyId);
+        values.put(UpdatedKeys.LAST_UPDATED, timeUnit.toSeconds(time));
+
+        return mContentResolver.insert(UpdatedKeys.CONTENT_URI, values);
     }
 
-    private ContentValues contentValueForApiAccounts(AccountSettings accSettings) {
-        ContentValues values = new ContentValues();
-        values.put(KeychainContract.ApiAccounts.ACCOUNT_NAME, accSettings.getAccountName());
-        values.put(KeychainContract.ApiAccounts.KEY_ID, accSettings.getKeyId());
-        values.put(KeychainContract.ApiAccounts.COMPRESSION, accSettings.getCompression());
-        values.put(KeychainContract.ApiAccounts.ENCRYPTION_ALGORITHM, accSettings.getEncryptionAlgorithm());
-        values.put(KeychainContract.ApiAccounts.HASH_ALORITHM, accSettings.getHashAlgorithm());
-        return values;
-    }
-
-    public void insertApiApp(AppSettings appSettings) {
-        mContentResolver.insert(KeychainContract.ApiApps.CONTENT_URI,
-                contentValueForApiApps(appSettings));
-    }
-
-    public void insertApiAccount(Uri uri, AccountSettings accSettings) {
-        mContentResolver.insert(uri, contentValueForApiAccounts(accSettings));
-    }
-
-    public void updateApiAccount(AccountSettings accSettings, Uri uri) {
-        if (mContentResolver.update(uri, contentValueForApiAccounts(accSettings), null,
-                null) <= 0) {
-            throw new RuntimeException();
-        }
-    }
-
-    /**
-     * Must be an uri pointing to an account
-     *
-     * @param uri
-     * @return
-     */
-    public AppSettings getApiAppSettings(Uri uri) {
-        AppSettings settings = null;
-
-        Cursor cursor = mContentResolver.query(uri, null, null, null, null);
-        try {
-            if (cursor != null && cursor.moveToFirst()) {
-                settings = new AppSettings();
-                settings.setPackageName(cursor.getString(
-                        cursor.getColumnIndex(KeychainContract.ApiApps.PACKAGE_NAME)));
-                settings.setPackageSignature(cursor.getBlob(
-                        cursor.getColumnIndex(KeychainContract.ApiApps.PACKAGE_SIGNATURE)));
-            }
-        } finally {
-            if (cursor != null) {
-                cursor.close();
-            }
-        }
-
-        return settings;
-    }
-
-    public AccountSettings getApiAccountSettings(Uri accountUri) {
-        AccountSettings settings = null;
-
-        Cursor cursor = mContentResolver.query(accountUri, null, null, null, null);
-        try {
-            if (cursor != null && cursor.moveToFirst()) {
-                settings = new AccountSettings();
-
-                settings.setAccountName(cursor.getString(
-                        cursor.getColumnIndex(KeychainContract.ApiAccounts.ACCOUNT_NAME)));
-                settings.setKeyId(cursor.getLong(
-                        cursor.getColumnIndex(KeychainContract.ApiAccounts.KEY_ID)));
-                settings.setCompression(cursor.getInt(
-                        cursor.getColumnIndexOrThrow(KeychainContract.ApiAccounts.COMPRESSION)));
-                settings.setHashAlgorithm(cursor.getInt(
-                        cursor.getColumnIndexOrThrow(KeychainContract.ApiAccounts.HASH_ALORITHM)));
-                settings.setEncryptionAlgorithm(cursor.getInt(
-                        cursor.getColumnIndexOrThrow(KeychainContract.ApiAccounts.ENCRYPTION_ALGORITHM)));
-            }
-        } finally {
-            if (cursor != null) {
-                cursor.close();
-            }
-        }
-
-        return settings;
-    }
-
-    public Set<Long> getAllKeyIdsForApp(Uri uri) {
-        Set<Long> keyIds = new HashSet<Long>();
-
-        Cursor cursor = mContentResolver.query(uri, null, null, null, null);
-        try {
-            if (cursor != null) {
-                int keyIdColumn = cursor.getColumnIndex(KeychainContract.ApiAccounts.KEY_ID);
-                while (cursor.moveToNext()) {
-                    keyIds.add(cursor.getLong(keyIdColumn));
-                }
-            }
-        } finally {
-            if (cursor != null) {
-                cursor.close();
-            }
-        }
-
-        return keyIds;
-    }
-
-    public byte[] getApiAppSignature(String packageName) {
-        Uri queryUri = ApiApps.buildByPackageNameUri(packageName);
-
-        String[] projection = new String[]{ApiApps.PACKAGE_SIGNATURE};
-
-        Cursor cursor = mContentResolver.query(queryUri, projection, null, null, null);
-        try {
-            byte[] signature = null;
-            if (cursor != null && cursor.moveToFirst()) {
-                int signatureCol = 0;
-
-                signature = cursor.getBlob(signatureCol);
-            }
-            return signature;
-        } finally {
-            if (cursor != null) {
-                cursor.close();
-            }
-        }
+    public ContentResolver getContentResolver() {
+        return mContentResolver;
     }
 }

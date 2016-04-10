@@ -24,7 +24,20 @@ import java.io.InputStream;
 import java.util.List;
 
 public abstract class Keyserver {
-    public static class QueryFailedException extends Exception {
+
+    public static class CloudSearchFailureException extends Exception {
+        private static final long serialVersionUID = 2703768928624654515L;
+
+        public CloudSearchFailureException(String message) {
+            super(message);
+        }
+
+        public CloudSearchFailureException() {
+            super();
+        }
+    }
+
+    public static class QueryFailedException extends CloudSearchFailureException {
         private static final long serialVersionUID = 2703768928624654512L;
 
         public QueryFailedException(String message) {
@@ -32,7 +45,7 @@ public abstract class Keyserver {
         }
     }
 
-    public static class QueryNeedsRepairException extends Exception {
+    public static class QueryNeedsRepairException extends CloudSearchFailureException {
         private static final long serialVersionUID = 2693768928624654512L;
     }
 
@@ -44,12 +57,19 @@ public abstract class Keyserver {
         private static final long serialVersionUID = 2703768928624654514L;
     }
 
+    /**
+     * query too short _or_ too many responses
+     */
+    public static class QueryTooShortOrTooManyResponsesException extends QueryNeedsRepairException {
+        private static final long serialVersionUID = 2703768928624654518L;
+    }
+
     public static class AddKeyException extends Exception {
         private static final long serialVersionUID = -507574859137295530L;
     }
 
-    public abstract List<ImportKeysListEntry> search(String query) throws QueryFailedException,
-            QueryNeedsRepairException;
+    public abstract List<ImportKeysListEntry> search(String query)
+            throws QueryFailedException, QueryNeedsRepairException;
 
     public abstract String get(String keyIdHex) throws QueryFailedException;
 

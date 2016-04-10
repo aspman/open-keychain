@@ -1,11 +1,16 @@
+[![Stories in Ready](https://badge.waffle.io/open-keychain/open-keychain.png?label=ready&title=Ready)](https://waffle.io/open-keychain/open-keychain)
 # OpenKeychain (for Android)
 
 OpenKeychain is an OpenPGP implementation for Android.  
-For a more detailed description and installation instructions go to http://www.openkeychain.org .
+For a more detailed description and installation instructions go to https://www.openkeychain.org .
 
-### Travis CI Build Status
+### Branches
+* The development of OpenKeychain happens in the "master" branch.
+* For every release a new branch, e.g., "3.2-fixes" is created to backport fixes from "master"
 
-[![Build Status](https://travis-ci.org/open-keychain/open-keychain.png?branch=master)](https://travis-ci.org/open-keychain/open-keychain)
+### Travis CI Build Status of master branch
+
+[![Build Status](https://travis-ci.org/open-keychain/open-keychain.svg?branch=master)](https://travis-ci.org/open-keychain/open-keychain)
 
 ## How to help the project?
 
@@ -15,83 +20,61 @@ Translations are managed at Transifex, please contribute there at https://www.tr
 
 ### Contribute Code
 
-1. Join the development mailinglist at http://groups.google.com/d/forum/openpgp-keychain-dev
-2. Lookout for interesting issues on our issue page at Github: https://github.com/open-keychain/open-keychain/issues
-3. Tell us about your plans on the mailinglist
-4. Read this README, especially the notes about coding style
-5. Fork OpenKeychain and contribute code (the best part ;) )
-6. Open a pull request on Github. I will help with occuring problems and merge your changes back into the main project.
+1. Lookout for interesting issues on Github. We have tagged issues were we explicitly like to see contributions: https://github.com/open-keychain/open-keychain/labels/help-wanted
+2. Read this README, especially the notes about coding style
+3. Fork OpenKeychain and contribute code (the best part :sunglasses: )
+4. Open a pull request on Github. We will help with occuring problems and merge your changes back into the main project.
+5. PROFIT
+
+### For bigger changes
+
+1. Join the development mailinglist at https://lists.riseup.net/www/subscribe/openkeychain
+2. Propose bigger changes and discuss the consequences
 
 I am happy about every code contribution and appreciate your effort to help us developing OpenKeychain!
 
 ## Development
 
-Development mailinglist at http://groups.google.com/d/forum/openpgp-keychain-dev
+Development mailinglist at https://lists.riseup.net/www/subscribe/openkeychain
 
 ### Build with Gradle
 
-1. Get all external submodules with ``git submodule update --init --recursive``
-2. Have Android SDK "tools", "platform-tools", and "build-tools" directories in your PATH (http://developer.android.com/sdk/index.html)
-3. Open the Android SDK Manager (shell command: ``android``).  
-Expand the Tools directory and select "Android SDK Build-tools (Version 19.1)".  
-Expand the Extras directory and install "Android Support Repository"  
-Select everything for the newest SDK Platform (API-Level 19)
-4. Export ANDROID_HOME pointing to your Android SDK
-5. Execute ``./gradlew build``
-6. You can install the app with ``adb install -r OpenKeychain/build/apk/OpenKeychain-debug-unaligned.apk``
+1. Clone the project from GitHub
+2. Get all external submodules with ``git submodule update --init --recursive``
+3. Have Android SDK "tools", "platform-tools", and "build-tools" directories in your PATH (http://developer.android.com/sdk/index.html)
+4. Open the Android SDK Manager (shell command: ``android``).
+Expand the Tools directory and select "Android SDK Build-tools (Version 23.0.1)".
+Expand the Extras directory and install "Android Support Library", as well as "Local Maven repository for Support Libraries"
+Select SDK Platform for API levels 21, 22, and 23.
+5. Export ANDROID_HOME pointing to your Android SDK
+6. Execute ``./gradlew assembleFdroidDebug``
+7. You can install the app with ``adb install -r OpenKeychain/build/outputs/apk/OpenKeychain-fdroid-debug.apk``
 
-### Build API Demo with Gradle
+### Run Tests
+1. Use OpenJDK instead of Oracle JDK
+2. Execute ``./gradlew clean testFdroidDebug --continue``
 
-1. Follow 1-4 from above
-2. The example code is available at https://github.com/open-keychain/api-example
-3. Execute ``./gradlew build``
+### Run Jacoco Test Coverage
+1. Use OpenJDK instead of Oracle JDK
+2. Execute ``./gradlew clean testFdroidDebug jacocoTestReport``
+3. Report is here: OpenKeychain/build/reports/jacoco/jacocoTestReport/html/index.html
 
 ### Development with Android Studio
 
-I am using the newest [Android Studio](http://developer.android.com/sdk/installing/studio.html) for development. Development with Eclipse is currently not possible because I am using the new [project structure](http://developer.android.com/sdk/installing/studio-tips.html).
+We are using the newest [Android Studio](http://developer.android.com/sdk/installing/studio.html) for development. Development with Eclipse is currently not possible because we are using the new [project structure](http://developer.android.com/sdk/installing/studio-tips.html).
 
-1. Clone the project from github
-2. From Android Studio: File -> Import Project ->  ...
-  * Select the cloned top folder if you want to develop on the main project
-  * Select the "OpenKeychain-API" folder if you want to develop on the API example
-3. Import project from external model -> choose Gradle
-
-## OpenKeychain's API
-
-OpenKeychain provides two APIs, namely the Intent API and the Remote OpenPGP API.
-The Intent API can be used without permissions to start OpenKeychain's activities for cryptographic operations, import of keys, etc.
-However, it always requires user input, so that no malicious application can use this API without user intervention.  
-The Remote OpenPGP API is more sophisticated and allows to to operations without user interaction in the background.
-When utilizing this API, OpenKeychain asks the user on first use to grant access for the calling client application.
-
-More technical information and examples about these APIs can be found in the project's wiki:  
-* [Intent API](https://github.com/open-keychain/open-keychain/wiki/Intent-API)
-* [Remote OpenPGP API](https://github.com/open-keychain/open-keychain/wiki/OpenPGP-API)
-
+1. Clone the project from Github
+2. Get all external submodules with ``git submodule update --init --recursive``
+3. From Android Studio: File -> Import Project ->  Select the cloned top folder
 
 ## Libraries
 
-
-### ZXing Barcode Scanner Android Integration
-
-Classes can be found under https://github.com/open-keychain/zxing-android-integration.
-
-1. Copy all classes from https://github.com/zxing/zxing/tree/master/android-integration folder to our git repository.
-
-### ZXing QR-Code Classes
-
-Classes can be found under https://github.com/open-keychain/zxing-qr-code.
-All QR Code related classes were extracted from the ZXing library (https://github.com/zxing/zxing).
-
 ### Bouncy Castle
 
-#### Spongy Castle
-
-Spongy Castle is the stock Bouncy Castle libraries with a couple of small changes to make it work on Android. OpenKeychain uses a forked version with some small changes. These changes will been sent to Bouncy Castle, and Spongy Castle will be used again when they have filtered down.
+OpenKeychain uses a forked version with some small changes. These changes will been sent to Bouncy Castle.
 
 see
-* Fork: https://github.com/openpgp-keychain/spongycastle
-* Spongy Castle: http://rtyley.github.com/spongycastle/
+* Fork: https://github.com/open-keychain/bouncycastle
 
 #### Bouncy Castle resources
 
@@ -103,76 +86,100 @@ see
 * Tests in https://github.com/bcgit/bc-java/tree/master/pg/src/test/java/org/bouncycastle/openpgp/test
 * Examples in https://github.com/bcgit/bc-java/tree/master/pg/src/main/java/org/bouncycastle/openpgp/examples
 * Mailinglist Archive at http://bouncy-castle.1462172.n4.nabble.com/Bouncy-Castle-Dev-f1462173.html
+* Commit changelog of pg subpackage: https://github.com/bcgit/bc-java/commits/master/pg
 
-
-## Notes
-
-### Gradle Build System
+## Build System
 
 We try to make our builds as [reproducible/deterministic](https://blog.torproject.org/blog/deterministic-builds-part-one-cyberwar-and-global-compromise) as possible.  
-When changing build files or dependencies, respect the following requirements:
-* No precompiled libraries (you never know what pre-compiled jar files really contain!). All libraries should be forked into the open-keychain Github project and then provided as git submodules in the "extern" folder.
-* No dependencies from Maven (also a soft requirement for inclusion in [F-Droid](https://f-droid.org))
+
+#### Update Gradle version
 * Always use a fixed Android Gradle plugin version not a dynamic one, e.g. ``0.7.3`` instead of ``0.7.+`` (allows offline builds without lookups for new versions, also some minor Android plugin versions had serious issues, i.e. [0.7.2 and 0.8.1](http://tools.android.com/tech-docs/new-build-system))
-* Commit the corresponding [Gradle wrapper](http://www.gradle.org/docs/current/userguide/gradle_wrapper.html) to the repository (allows easy building for new contributors without the need to install the required Gradle version using a package manager)
-* In order to update the build system to a newer gradle version you need to:
-  * Update every build.gradle file with the new gradle version and/or gradle plugin version
+* Update every build.gradle file with the new gradle version and/or gradle plugin version
     * build.gradle
     * OpenKeychain/build.gradle
-    * OpenKeychain-API/build.gradle
-    * OpenKeychain-API/example-app/build.gradle
-    * OpenKeychain-API/libraries/keychain-api-library/build.gradle
-  * run ./gradlew wrapper twice to update gradle and download the new gradle jar file
-  * commit the new gradle jar and property files
+* run ./gradlew wrapper twice to update gradle and download the new gradle jar file
+* commit the corresponding [Gradle wrapper](http://www.gradle.org/docs/current/userguide/gradle_wrapper.html) to the repository (allows easy building for new contributors without the need to install the required Gradle version using a package manager)
+  
+#### Update SDK and Build Tools
+* Open build.gradle and change:
+```
+ext {
+    compileSdkVersion = 21
+    buildToolsVersion = '21.1.2'
+}
+```
+* Change SDK and Build Tools in git submodules "openkeychain-api-lib" and "openpgp-api-lib" manually. They should also build on their own without the ext variables.
 
-### Slow Gradle?
+#### Add new library
+* You can add the library as a Maven dependency or as a git submodule (if patches are required) in the "extern" folder.
+* You can get all transitive dependencies with ``./gradlew -q dependencies OpenKeychain:dependencies``
+* If added as a Maven dependency, pin the library using [Gradle Witness](https://github.com/WhisperSystems/gradle-witness) (Do ``./gradlew -q calculateChecksums`` for Trust on First Use)
+* If added as a git submodule, change the ``compileSdkVersion`` and ``buildToolsVersion`` in build.gradle to use the variables from the root project:
+```
+android {
+    compileSdkVersion rootProject.ext.compileSdkVersion
+    buildToolsVersion rootProject.ext.buildToolsVersion
+}
+```
+* You can check for wrong ``compileSdkVersion`` by ``find -name build.gradle | xargs grep compileSdkVersion``
+
+#### Slow Gradle?
 
 * https://www.timroes.de/2013/09/12/speed-up-gradle/
 * Disable Lint checking if it is enabled in build.gradle
 
-### Translations
+#### Error:Configuration with name 'default' not found.
+
+Gradle project dependencies are missing. Do a ``git submodule init && git submodule update``
+
+#### Build on Mac OS X fails?
+
+Try exporting JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF8"
+
+## Translations
 
 Translations are hosted on Transifex, which is configured by ".tx/config".
 
 1. To pull newest translations install transifex client (e.g. ``apt-get install transifex-client``)
 2. Config Transifex client with "~/.transifexrc"
 3. Go into root folder of git repo
-4. execute ``tx pull`` (``tx pull -a`` to get all languages)
+4. execute ``tx pull -af --skip``
 
 see http://help.transifex.net/features/client/index.html#user-client
 
 ## Coding Style
 
 ### Code
-* Indentation: 4 spaces, no tabs
-* Maximum line width for code and comments: 100
-* Opening braces don't go on their own line
+* Indentation: 4 spaces, no tabs.
+* Maximum line width for code and comments: 100.
+* Opening braces don't go on their own line.
 * Field names: Non-public, non-static fields start with m.
 * Acronyms are words: Treat acronyms as words in names, yielding !XmlHttpRequest, getUrl(), etc.
 * Fully Qualify Imports: Do *not* use wildcard-imports such as ``import foo.*;``
+* Android Studio warnings should be fixed, or suppressed if they are incorrect.
 
 The full coding style can be found at http://source.android.com/source/code-style.html
 
 ### Automated syntax check with CheckStyle
 
-####Linux
+#### Linux
 1. Paste the `tools/checkstyle.xml` file to `~/.AndroidStudioPreview/config/codestyles/`
 2. Go to Settings > Code Style > Java, select OpenPgpChecker, as well as Code Style > XML and select OpenPgpChecker again.
 3. Start code inspection and see the results by selecting Analyze > Inspect Code from Android-Studio or you can directly run checkstyle via cli with `.tools/checkstyle`. Make sure it's executable first.
 
-####Mac OSX
+#### Mac OSX
 1. Paste the `tools/checkstyle.xml` file to `~/Library/Preferences/AndroidStudioPreview/codestyles`
 2. Go to Preferences > Code Style > Java, select OpenPgpChecker, as well as Code Style > XML and select OpenPgpChecker again.
 3. Start code inspection and see the results by selecting Analyze > Inspect Code from Android-Studio or you can directly run checkstyle via cli with `.tools/checkstyle`. Make sure it's executable first.
 
-####Windows
+#### Windows
 1. Paste the `tools/checkstyle.xml` file to `C:\Users\<UserName>\.AndroidStudioPreview\config\codestyles`
 2. Go to File > Settings > Code Style > Java, select OpenPgpChecker, as well as Code Style > XML and select OpenPgpChecker again.
 3. Start code inspection and see the results by selecting Analyze > Inspect Code from Android-Studio.
 
 ## Licenses
 OpenKechain is licensed under GPLv3+.
-The full license text can be found in the [LICENSE file](https://github.com/open-keychain/open-keychain/blob/master/LICENSE).
+The full license text can be found in the [LICENSE file](https://github.com/open-keychain/open-keychain/blob/HEAD/LICENSE).
 Some parts and some libraries are Apache License v2, MIT X11 License (see below).
 
 > This program is free software: you can redistribute it and/or modify
@@ -191,44 +198,14 @@ Some parts and some libraries are Apache License v2, MIT X11 License (see below)
 
 ### Libraries
 
-* SpongyCastle  
-  https://github.com/rtyley/spongycastle  
-  MIT X11 License
-
-* Android Support Library v4  
-  http://developer.android.com/tools/support-library/index.html  
-  Apache License v2
-  
-* Android Support Library v7 'appcompat'  
-  http://developer.android.com/tools/support-library/index.html  
-  Apache License v2
-
-* HtmlTextView  
-  https://github.com/dschuermann/html-textview  
-  Apache License v2
-
-* ZXing  
-  https://github.com/zxing/zxing  
-  Apache License v2
-  
-* StickyListHeaders  
-  https://github.com/emilsjolander/StickyListHeaders  
-  Apache License v2
-  
-* Android-Bootstrap  
-  https://github.com/Bearded-Hen/Android-Bootstrap  
-  MIT License
-
-* Android AppMsg  
-  https://github.com/johnkil/Android-AppMsg  
-  Apache License v2
+See [In-app about screen](https://github.com/open-keychain/open-keychain/blob/HEAD/OpenKeychain/src/main/res/raw/help_about.md)
 
 ### Images
-* icon.svg  
-  modified version of kgpg_key2_kopete.svgz
-  
-* Menu icons  
+* Actionbar icons  
   http://developer.android.com/design/downloads/index.html#action-bar-icon-pack
 
-* Purple color scheme  
-  http://android-holo-colors.com/
+* QR Code Actionbar icon  
+  https://github.com/openintents/openintents/blob/master/extensions/qrcode_ext/icons/ic_menu_qr_code/ic_menu_qr_code_holo_light/ic_menu_qr_code.svg
+
+* Key status icons by the ModernPGP working group  
+  https://github.com/ModernPGP
